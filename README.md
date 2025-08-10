@@ -28,7 +28,7 @@ To address this, we developed a **custom GUI** inspired by [Bitcraze’s cfclien
 
 ## Project Timeline – Crazyflie GUI Python
 
-### **2025-05-20 — Initial GUI Prototype**
+### **2025-05-20 — Our First GUI**
 
 * Completed integration between Python control code, MATLAB, and Crazyflie
 * Designed first GUI version for operator-friendly control
