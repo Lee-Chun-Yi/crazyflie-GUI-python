@@ -2,14 +2,14 @@
 
 This guide explains how to **download** and **update** the `crazyflie-GUI-python` repository using the command line (Git).
 
----
+
 
 ## 1. Prerequisites
 
 - **Git** installed on your system  
   - [Download Git](https://git-scm.com/downloads)
 
----
+
 
 ## 2. First-time Download (Clone the Repository)
 
@@ -29,7 +29,6 @@ cfmarslab
 
 in terminal to launch
 
----
 
 ## 3. Updating to the Latest Version
 
