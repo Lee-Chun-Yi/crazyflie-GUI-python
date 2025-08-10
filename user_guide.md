@@ -1,6 +1,3 @@
-
-
-````markdown
 # User Guide — crazyflie-GUI-python
 
 This guide explains how to **download** and **update** the `crazyflie-GUI-python` repository using the command line (Git).
@@ -99,6 +96,5 @@ python -m src.main
 
 **Repository Link:** [https://github.com/Lee-Chun-Yi/crazyflie-GUI-python](https://github.com/Lee-Chun-Yi/crazyflie-GUI-python)
 
-```
 
 
