@@ -6,7 +6,7 @@ This guide explains how to **download** and **update** the `crazyflie-GUI-python
 
 ## 1. Prerequisites
 
-- **Git** installed on your system  
+**Git** installed on your system  
   - [Download Git](https://git-scm.com/downloads)
 
 
@@ -38,17 +38,4 @@ When a new update is available, run:
 cd crazyflie-GUI-python
 git pull --rebase --autostash
 ```
-
-This will:
-
-* Download the latest changes from GitHub
-* Preserve your local modifications by stashing and reapplying them
-
-
-
----
-
-**Repository Link:** [https://github.com/Lee-Chun-Yi/crazyflie-GUI-python](https://github.com/Lee-Chun-Yi/crazyflie-GUI-python)
-
-
 
