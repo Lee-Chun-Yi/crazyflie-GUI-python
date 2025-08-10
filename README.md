@@ -10,8 +10,6 @@ However, as the Python scripts grew in complexity, maintaining a stable command 
 
 To address this, we developed a **custom GUI** inspired by [Bitcraze’s cfclient](https://github.com/bitcraze/crazyflie-clients-python), optimized for our project’s specific needs.
 
----
-
 
 
 ## Project Structure
@@ -28,13 +26,18 @@ To address this, we developed a **custom GUI** inspired by [Bitcraze’s cfclien
 ---
 
 
-## Project Timeline – Craztflie GUI Python
+## Project Timeline – Crazyflie GUI Python
 
-### 2025-05-20 — 完成python control code 與Matlab以及Crazyflie對接後，設計初版GUI
+### **2025-05-20 — Initial GUI Prototype**
 
-![](https://github.com/Lee-Chun-Yi/crazyflie-GUI-python/blob/main/image/%E8%9E%A2%E5%B9%95%E6%93%B7%E5%8F%96%E7%95%AB%E9%9D%A2%202025-08-11%20005757.png)
+* Completed integration between Python control code, MATLAB, and Crazyflie
+* Designed first GUI version for operator-friendly control
+  ![](https://github.com/Lee-Chun-Yi/crazyflie-GUI-python/blob/main/image/%E8%9E%A2%E5%B9%95%E6%93%B7%E5%8F%96%E7%95%AB%E9%9D%A2%202025-08-11%20005757.png)
 
+---
 
-### 2025-08-11 — 設計第二版GUI，將原有單一py拆成數個骨架，用以方便後續升級與維修
+### **2025-08-11 — Second GUI Version**
 
-![](https://github.com/Lee-Chun-Yi/crazyflie-GUI-python/blob/main/image/%E8%9E%A2%E5%B9%95%E6%93%B7%E5%8F%96%E7%95%AB%E9%9D%A2%202025-08-11%20010041.png)
+* Refactored original single `.py` into multiple modular files for easier upgrades and maintenance
+* Improved GUI layout for better usability
+  ![](https://github.com/Lee-Chun-Yi/crazyflie-GUI-python/blob/main/image/%E8%9E%A2%E5%B9%95%E6%93%B7%E5%8F%96%E7%95%AB%E9%9D%A2%202025-08-11%20010041.png)
