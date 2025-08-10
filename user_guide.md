@@ -19,15 +19,13 @@ This guide explains how to **download** and **update** the `crazyflie-GUI-python
 Open your terminal and run:
 
 ```bash
-# Using HTTPS
+
 git clone https://github.com/Lee-Chun-Yi/crazyflie-GUI-python.git
 cd crazyflie-GUI-python
 
-# (Optional) Using SSH
-# ssh-keygen -t ed25519 -C "you@example.com"
-# Add the public key to your GitHub account → Settings → SSH keys
-# git clone git@github.com:Lee-Chun-Yi/crazyflie-GUI-python.git
 ````
+
+once the file is downloaded, enter: ```cfmarslab``` in terminal to open it 
 
 ---
 
