@@ -39,19 +39,19 @@ To address this, we developed a **custom GUI** inspired by [Bitcraze’s cfclien
 
 ---
 
-## Dependencies
 
-* **Python ≥ 3.10**
-* [`cflib`](https://github.com/bitcraze/crazyflie-lib-python) for Crazyflie communication
-* **Tkinter** for GUI rendering
-* **Zadig** (Windows only) for Crazyradio PA driver installation
-
----
-
-## Future Plans
+## Ongoing Plans
 
 * Integration with **MATLAB/Simulink** live control
 * Enhanced logging visualization (real-time plotting within the GUI)
 * Safety features such as obstacle proximity alerts and emergency override
 
+## Project Timeline – Craztflie GUI Python
+
+### 2025-05-20 — 完成python control code 與Matlab以及Crazyflie對接後，設計初版GUI
+
+![](https://github.com/Lee-Chun-Yi/crazyflie-GUI-python/blob/main/image/%E8%9E%A2%E5%B9%95%E6%93%B7%E5%8F%96%E7%95%AB%E9%9D%A2%202025-08-11%20005757.png)
+
+
+### 2025-08-11 — 設計第二版GUI，將原有單一py拆成數個骨架，用以方便後續升級與維修
 
