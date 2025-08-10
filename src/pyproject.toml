@@ -1,0 +1,21 @@
+[project]
+name = "cfmarslab"
+version = "0.1.0"
+description = "Crazyflie GUI launcher"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "cflib>=0.1.27",
+  "matplotlib>=3.8",
+  # tkinter 為標準庫，Windows 版 Python 已含；Linux 需安裝系統套件
+]
+
+[project.scripts]
+cfmarslab = "cfmarslab.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
