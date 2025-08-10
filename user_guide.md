@@ -25,7 +25,11 @@ cd crazyflie-GUI-python
 
 ````
 
-once the file is downloaded, enter: ```cfmarslab``` in terminal to open it 
+Once the file is downloaded, enter: 
+
+```cfmarslab``` 
+
+in terminal to open it 
 
 ---
 
