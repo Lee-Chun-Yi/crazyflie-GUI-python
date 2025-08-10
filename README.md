@@ -17,8 +17,6 @@ To address this, we developed a **custom GUI** inspired by [Bitcraze’s cfclien
 * `src/`
   Main GUI source code, organized into modules for connection handling, flight control, and logging.
 
-* `ui/`
-  Tkinter-based interface definitions and style configuration.
 
 * `docs/`
   User guides, setup instructions, and troubleshooting reference.
