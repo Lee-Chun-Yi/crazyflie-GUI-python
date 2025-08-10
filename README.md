@@ -3,9 +3,9 @@
 We named this GUI as: cfmarslab.
 
 This repository is a **GUI-based control interface** for the [NCKU-Quadrotor-Navigation](https://github.com/Lee-Chun-Yi/NCKU-Quadrotor-Navigation) project.
-It serves as a dedicated branch focusing on an **operator-friendly interface** to manage quadrotor control, replacing the need for direct interaction with long and complex Python scripts.
+It serves as a dedicated branch focusing on an operator-friendly interface to manage quadrotor control, replacing the need for direct interaction with long and complex Python scripts.
 
-In our previous workflow, quadrotor control relied on a combination of **MATLAB** (for high-level control logic) and **Python** (for low-level command transmission).
+In our previous workflow, quadrotor control relied on a combination of **MATLAB**  and **Python** .
 However, as the Python scripts grew in complexity, maintaining a stable command transmission frequency became challenging—especially when a single `.py` file handled multiple critical tasks simultaneously.
 
 To address this, we developed a **custom GUI** inspired by [Bitcraze’s cfclient](https://github.com/bitcraze/crazyflie-clients-python), optimized for our project’s specific needs.
