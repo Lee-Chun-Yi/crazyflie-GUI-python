@@ -1,4 +1,3 @@
-# src/cfmarslab/models.py
 from dataclasses import dataclass, field
 from threading import Event, Lock
 from collections import deque
@@ -12,14 +11,8 @@ class SharedState:
     })
     # User target coords (m)
     user_xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-
     # Telemetry
     vbat: float = 0.0
-    rssi: float = float("nan")
-    latency_ms: float = float("nan")
-
-    # Timestamps
-    last_input_ts: float = 0.0   # last time host input was received
 
     # Concurrency primitives
     stop_all: Event = field(default_factory=Event)
