@@ -24,6 +24,7 @@ class App(tk.Tk):
         self.state_model = SharedState()
         self.cfg = load_config()
         self.link: LinkManager|None = None
+        self.cf = None
 
         self._coords_running = False
         self._coords_thread: threading.Thread|None = None
@@ -131,6 +132,10 @@ class App(tk.Tk):
         self.btn_xyz_stop  = ttk.Button(row2, text="Stop setpoints", state=tk.DISABLED, command=self.stop_coords)
         self.btn_xyz_start.pack(side=tk.LEFT); self.btn_xyz_stop.pack(side=tk.LEFT, padx=6)
 
+        # Arm button
+        self.btn_arm = ttk.Button(parent, text="Arm", command=self._arm_cf, state=tk.DISABLED)
+        self.btn_arm.pack(anchor=tk.W, pady=(8,0))
+
         # Flight Control
         fc = ttk.Labelframe(parent, text="Flight Control", padding=8)
         fc.pack(fill=tk.X, pady=(8,0))
@@ -200,7 +205,9 @@ class App(tk.Tk):
         self.log("Connecting...")
         try:
             self.link = LinkManager(self.state_model, uri); self.link.connect()
+            self.cf = self.link.cf
             self.btn_conn.configure(state=tk.DISABLED); self.btn_disc.configure(state=tk.NORMAL)
+            self.btn_arm.configure(state=tk.NORMAL)
             uris = [u for u in [uri] + self.cfg.recent_uris if u and u != uri]
             self.cfg.recent_uris = [uri] + uris[:7]; save_config(self.cfg)
             self.mru_combo.configure(values=self.cfg.recent_uris)
@@ -212,7 +219,9 @@ class App(tk.Tk):
         try:
             if self.setpoints: self.setpoints.stop(); self.setpoints=None
             if self.link: self.link.disconnect(); self.link=None
+            self.cf = None
             self.btn_conn.configure(state=tk.NORMAL); self.btn_disc.configure(state=tk.DISABLED)
+            self.btn_arm.configure(state=tk.DISABLED)
             if hasattr(self, "lbl_status"):
                 self.lbl_status.configure(text=" | Disconnected")
             self.log("Disconnected")
@@ -262,6 +271,14 @@ class App(tk.Tk):
         if self.setpoints: self.setpoints.stop()
         self.btn_sp_start.configure(state=tk.NORMAL); self.btn_sp_stop.configure(state=tk.DISABLED)
         self.log("Setpoint loop stopped")
+
+    def _arm_cf(self):
+        try:
+            if self.cf:
+                self.cf.platform.send_arming_request(True)
+                self.log("Arming request sent")
+        except Exception as e:
+            self.log(f"Arming request failed: {e}")
 
     # ---- Safety ----
     def emergency_stop(self):
