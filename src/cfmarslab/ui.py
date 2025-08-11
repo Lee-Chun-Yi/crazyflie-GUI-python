@@ -170,15 +170,24 @@ class App(tk.Tk):
         except Exception:
             bg_color = self.cget("background")
 
-        log_items = ["X", "Y", "Z", "Rot_X", "Rot_Y", "Rot_Z", "Roll", "Pitch", "Yaw", "Thrust"]
+        # Mapping of internal log keys -> checkbox labels displayed in the UI
+        # Keys are stored in lowercase for easy lookup later when samples are
+        # appended.  Using a tuple (key, label) keeps display text unchanged
+        # while normalising access.
+        log_items = [
+            ("x", "X"), ("y", "Y"), ("z", "Z"),
+            ("rot_x", "Rot_X"), ("rot_y", "Rot_Y"), ("rot_z", "Rot_Z"),
+            ("roll", "Roll"), ("pitch", "Pitch"), ("yaw", "Yaw"),
+            ("thrust", "Thrust"),
+        ]
         self.log_opts = {}
 
-        for name in log_items:
+        for key, label in log_items:
             var = tk.BooleanVar(value=False)
-            self.log_opts[name] = var
+            self.log_opts[key] = var
             cb = tk.Checkbutton(
                 parent,
-                text=name,
+                text=label,
                 variable=var,
                 font=("Segoe UI", 10),
                 selectimage=None,
@@ -292,17 +301,32 @@ class App(tk.Tk):
         sample = {}
         # positions from GUI
         try:
-            if self.log_params["x"].get(): sample["x"] = float(self.x_var.get() or 0.0)
-            if self.log_params["y"].get(): sample["y"] = float(self.y_var.get() or 0.0)
-            if self.log_params["z"].get(): sample["z"] = float(self.z_var.get() or 0.0)
+            if self.log_opts["x"].get():
+                sample["x"] = float(self.x_var.get() or 0.0)
+            if self.log_opts["y"].get():
+                sample["y"] = float(self.y_var.get() or 0.0)
+            if self.log_opts["z"].get():
+                sample["z"] = float(self.z_var.get() or 0.0)
         except Exception:
             pass
-        # rotations from SharedState.rpyth (roll/pitch/yaw)
+        # rotations / setpoints from SharedState.rpyth (roll/pitch/yaw/thrust)
         try:
             with self.state_model.lock:
-                if self.log_params["rot_x"].get(): sample["rot_x"] = float(self.state_model.rpyth.get("roll", 0.0))
-                if self.log_params["rot_y"].get(): sample["rot_y"] = float(self.state_model.rpyth.get("pitch", 0.0))
-                if self.log_params["rot_z"].get(): sample["rot_z"] = float(self.state_model.rpyth.get("yaw", 0.0))
+                rpyth = self.state_model.rpyth
+                if self.log_opts["rot_x"].get():
+                    sample["rot_x"] = float(rpyth.get("roll", 0.0))
+                if self.log_opts["rot_y"].get():
+                    sample["rot_y"] = float(rpyth.get("pitch", 0.0))
+                if self.log_opts["rot_z"].get():
+                    sample["rot_z"] = float(rpyth.get("yaw", 0.0))
+                if self.log_opts.get("roll") and self.log_opts["roll"].get():
+                    sample["roll"] = float(rpyth.get("roll", 0.0))
+                if self.log_opts.get("pitch") and self.log_opts["pitch"].get():
+                    sample["pitch"] = float(rpyth.get("pitch", 0.0))
+                if self.log_opts.get("yaw") and self.log_opts["yaw"].get():
+                    sample["yaw"] = float(rpyth.get("yaw", 0.0))
+                if self.log_opts.get("thrust") and self.log_opts["thrust"].get():
+                    sample["thrust"] = float(rpyth.get("thrust", 0.0))
         except Exception:
             pass
         if sample:
