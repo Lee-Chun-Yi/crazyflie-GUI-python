@@ -6,7 +6,7 @@ from tkinter import ttk, scrolledtext
 from .models import SharedState
 from .config import load_config, save_config
 from .link import LinkManager
-from .control import UDPInput, SetpointLoop
+from .control import UDPInput, SetpointLoop, PWMSetpointLoop
 import cflib.crtp
 
 UDP_COORD_PORT = 51002
@@ -106,6 +106,7 @@ class App(tk.Tk):
         self.udp.start()
 
         self.setpoints: SetpointLoop|None = None
+        self.pwm_loop: PWMSetpointLoop|None = None
 
     # ---- helpers ----
     def log(self, s: str):
@@ -131,9 +132,18 @@ class App(tk.Tk):
         self.btn_xyz_stop  = ttk.Button(row2, text="Stop setpoints", state=tk.DISABLED, command=self.stop_coords)
         self.btn_xyz_start.pack(side=tk.LEFT); self.btn_xyz_stop.pack(side=tk.LEFT, padx=6)
 
-        # Flight Control
-        fc = ttk.Labelframe(parent, text="Flight Control", padding=8)
-        fc.pack(fill=tk.X, pady=(8,0))
+        # Control mode notebook
+        self.ctrl_nb = ttk.Notebook(parent)
+        tab2 = ttk.Frame(self.ctrl_nb)
+        tab4 = ttk.Frame(self.ctrl_nb)
+        self.ctrl_nb.add(tab2, text="2-PID Controls")
+        self.ctrl_nb.add(tab4, text="4-PID Controls")
+        self.ctrl_nb.pack(fill=tk.X, pady=(8,0))
+        self.ctrl_nb.bind("<<NotebookTabChanged>>", self._on_ctrl_tab_change)
+
+        # --- 2-PID tab (RPYT setpoints) ---
+        fc = ttk.Labelframe(tab2, text="Flight Control", padding=8)
+        fc.pack(fill=tk.X)
         self.btn_sp_start = ttk.Button(fc, text="Start", command=self._sp_start)
         self.btn_sp_stop  = ttk.Button(fc, text="Stop",  command=self._sp_stop, state=tk.DISABLED)
         self.btn_sp_start.pack(side=tk.LEFT)
@@ -144,7 +154,21 @@ class App(tk.Tk):
         self.lbl_sp_actual = ttk.Label(fc, text="Actual: -- Hz")
         self.lbl_sp_actual.pack(side=tk.LEFT, padx=(12,0))
 
-        # Safety
+        # --- 4-PID tab (PWM direct) ---
+        pwmf = ttk.Labelframe(tab4, text="PWM Control", padding=8)
+        pwmf.pack(fill=tk.X)
+        rowp = ttk.Frame(pwmf); rowp.pack(fill=tk.X)
+        self.pwm_vars = [tk.StringVar(value="0") for _ in range(4)]
+        for i, var in enumerate(self.pwm_vars):
+            ttk.Label(rowp, text=f"m{i+1}").grid(row=0, column=2*i, padx=(0,4))
+            ttk.Entry(rowp, width=8, textvariable=var, state="readonly").grid(row=0, column=2*i+1, padx=(0,8))
+        rowb = ttk.Frame(pwmf); rowb.pack(fill=tk.X, pady=(8,0))
+        self.btn_pwm_start = ttk.Button(rowb, text="Start", command=self._pwm_start)
+        self.btn_pwm_stop  = ttk.Button(rowb, text="Stop", command=self._pwm_stop, state=tk.DISABLED)
+        self.btn_pwm_start.pack(side=tk.LEFT)
+        self.btn_pwm_stop.pack(side=tk.LEFT, padx=(6,12))
+
+        # Safety (common)
         safe = ttk.Labelframe(parent, text="Safety", padding=8); safe.pack(fill=tk.X, pady=(8,0))
         ttk.Button(safe, text="Emergency stop (RPYT=0,0,0,0)", command=self.emergency_stop).pack(side=tk.LEFT)
         ttk.Button(safe, text="Land (ramp down)", command=self.land).pack(side=tk.LEFT, padx=8)
@@ -211,6 +235,7 @@ class App(tk.Tk):
     def on_disconnect(self):
         try:
             if self.setpoints: self.setpoints.stop(); self.setpoints=None
+            if self.pwm_loop: self.pwm_loop.stop(); self.pwm_loop=None
             if self.link: self.link.disconnect(); self.link=None
             self.btn_conn.configure(state=tk.NORMAL); self.btn_disc.configure(state=tk.DISABLED)
             if hasattr(self, "lbl_status"):
@@ -249,6 +274,8 @@ class App(tk.Tk):
 
     # ---- Setpoint loop (CF) ----
     def _sp_start(self):
+        if self.pwm_loop and self.pwm_loop.is_running():
+            self._pwm_stop()
         if not self.link:
             self.log("Not connected"); return
         if not self.setpoints:
@@ -262,6 +289,34 @@ class App(tk.Tk):
         if self.setpoints: self.setpoints.stop()
         self.btn_sp_start.configure(state=tk.NORMAL); self.btn_sp_stop.configure(state=tk.DISABLED)
         self.log("Setpoint loop stopped")
+
+    # ---- PWM loop ----
+    def _pwm_start(self):
+        if self.setpoints and self.setpoints.is_running():
+            self._sp_stop()
+        if not self.link:
+            self.log("Not connected"); return
+        if not self.pwm_loop:
+            self.pwm_loop = PWMSetpointLoop(self.link)
+        self.pwm_loop.start()
+        self.btn_pwm_start.configure(state=tk.DISABLED); self.btn_pwm_stop.configure(state=tk.NORMAL)
+        self.log("4PID loop started")
+
+    def _pwm_stop(self):
+        if self.pwm_loop: self.pwm_loop.stop()
+        self.btn_pwm_start.configure(state=tk.NORMAL); self.btn_pwm_stop.configure(state=tk.DISABLED)
+        self.log("4PID loop stopped")
+
+    def _on_ctrl_tab_change(self, *_):
+        if not hasattr(self, 'ctrl_nb'):
+            return
+        tab = self.ctrl_nb.tab(self.ctrl_nb.select(), "text")
+        if tab == "2-PID Controls":
+            if self.pwm_loop and self.pwm_loop.is_running():
+                self._pwm_stop()
+        elif tab == "4-PID Controls":
+            if self.setpoints and self.setpoints.is_running():
+                self._sp_stop()
 
     # ---- Safety ----
     def emergency_stop(self):
@@ -334,6 +389,14 @@ class App(tk.Tk):
         except Exception:
             pass
 
+        # update PWM display fields
+        try:
+            if self.pwm_loop:
+                for i, var in enumerate(self.pwm_vars):
+                    var.set(str(int(self.pwm_loop.last_pwm[i])))
+        except Exception:
+            pass
+
         # record only selected parameters
         self._append_log_params_sample()
 
@@ -343,6 +406,7 @@ class App(tk.Tk):
         try:
             self._coords_running = False
             if self.setpoints: self.setpoints.stop()
+            if self.pwm_loop: self.pwm_loop.stop()
             if self.link: self.link.disconnect()
         finally:
             self.destroy()

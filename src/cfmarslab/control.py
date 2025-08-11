@@ -155,3 +155,76 @@ class SetpointLoop:
                 sleep(d)
             else:
                 t = perf_counter()
+
+
+class PWMSetpointLoop:
+    """Receive m1–m4 PWM values via UDP and set Crazyflie motor power."""
+
+    def __init__(self, link, port: int = 8889, rate_hz: int = 100):
+        self.link = link
+        self.port = port
+        self._rate_hz = max(1, int(rate_hz))
+        self._rate_lock = Lock()
+        self._run_flag = Event()
+        self._thread: Optional[Thread] = None
+        self.last_pwm = [0, 0, 0, 0]
+
+    # --- public API ---
+    def start(self, rate_hz: Optional[int] = None):
+        if rate_hz is not None:
+            self.set_rate(rate_hz)
+        if self._thread and self._thread.is_alive():
+            return
+        self._run_flag.set()
+        self._thread = Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._run_flag.clear()
+
+    def is_running(self) -> bool:
+        return self._run_flag.is_set()
+
+    def set_rate(self, hz: int):
+        with self._rate_lock:
+            self._rate_hz = max(1, int(hz))
+
+    def get_rate(self) -> int:
+        with self._rate_lock:
+            return self._rate_hz
+
+    # --- worker ---
+    def _run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", self.port))
+        sock.setblocking(False)
+        t = perf_counter()
+        motors = ("m1", "m2", "m3", "m4")
+        while self._run_flag.is_set():
+            try:
+                while True:
+                    data, _ = sock.recvfrom(1024)
+                    if len(data) == 16:
+                        vals = struct.unpack("<4f", data)
+                        pwm_values = [max(0, min(65535, int(v))) for v in vals]
+                        cf = getattr(self.link, "cf", None)
+                        if cf is not None:
+                            for i, m in enumerate(motors):
+                                try:
+                                    cf.param.set_value(f"motorPowerSet.{m}", str(pwm_values[i]))
+                                except Exception:
+                                    pass
+                        self.last_pwm[:] = pwm_values[:]
+            except BlockingIOError:
+                pass
+            except Exception:
+                # swallow and keep running
+                pass
+            with self._rate_lock:
+                dt = 1.0 / float(self._rate_hz)
+            t += dt
+            d = t - perf_counter()
+            if d > 0:
+                sleep(d)
+            else:
+                t = perf_counter()
