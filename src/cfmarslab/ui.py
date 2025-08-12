@@ -168,7 +168,7 @@ class App(tk.Tk):
         self.pwm_mode_var = tk.StringVar(value="manual")
         ttk.Radiobutton(rowm, text="Manual entry", variable=self.pwm_mode_var,
                         value="manual", command=self._on_pwm_mode_change).pack(side=tk.LEFT)
-        ttk.Radiobutton(rowm, text="UDP 8888", variable=self.pwm_mode_var,
+        ttk.Radiobutton(rowm, text="UDP @ 8888", variable=self.pwm_mode_var,
                         value="udp", command=self._on_pwm_mode_change).pack(side=tk.LEFT, padx=(12,0))
         rowp = ttk.Frame(pwmf); rowp.pack(fill=tk.X, pady=(4,0))
         self.pwm_vars = [tk.StringVar(value="0") for _ in range(4)]
@@ -178,6 +178,7 @@ class App(tk.Tk):
             e = ttk.Entry(rowp, width=8, textvariable=var)
             e.grid(row=0, column=2*i+1, padx=(0,8))
             self.pwm_entries.append(e)
+        self._on_pwm_mode_change()
         rowb = ttk.Frame(pwmf); rowb.pack(fill=tk.X, pady=(8,0))
         self.btn_pwm_start = ttk.Button(rowb, text="Start", command=self._pwm_start)
         self.btn_pwm_stop  = ttk.Button(rowb, text="Stop", command=self._pwm_stop, state=tk.DISABLED)
@@ -349,6 +350,7 @@ class App(tk.Tk):
         self.pwm_loop.start()
         self.btn_pwm_start.configure(state=tk.DISABLED); self.btn_pwm_stop.configure(state=tk.NORMAL)
         self.log("4PID loop started")
+        self._on_pwm_mode_change()
 
     def _pwm_stop(self):
         if self.pwm_loop: self.pwm_loop.stop()
@@ -356,37 +358,14 @@ class App(tk.Tk):
             self.pwm_udp.stop()
         self.btn_pwm_start.configure(state=tk.NORMAL); self.btn_pwm_stop.configure(state=tk.DISABLED)
         self.log("4PID loop stopped")
-
-    def _on_pwm_mode_change(self):
-        mode = self.pwm_mode_var.get()
-        state = tk.NORMAL if mode == "manual" else "readonly"
+        self._on_pwm_mode_change()
+    def _on_pwm_mode_change(self, *_):
+        """Switch m1~m4 Entry state based on selected PWM mode."""
+        mode = (self.pwm_mode_var.get() or "manual").lower()
+        state = "normal" if mode == "manual" else "readonly"
         for e in getattr(self, "pwm_entries", []):
             try:
                 e.configure(state=state)
-            except Exception:
-                pass
-        if self.pwm_loop:
-            try:
-                self.pwm_loop.set_mode(mode)
-            except Exception:
-                pass
-        if mode == "udp" and self.pwm_loop and self.pwm_loop.is_running():
-            if not self.pwm_udp:
-                self.pwm_udp = PWMUDPReceiver(port=8888)
-                self.pwm_udp.start()
-            self.pwm_loop.attach_udp(self.pwm_udp)
-        elif mode == "manual" and self.pwm_loop and self.pwm_loop.is_running():
-            if self.pwm_udp:
-                self.pwm_udp.stop()
-            pwm = []
-            for var in self.pwm_vars:
-                try:
-                    v = int(var.get())
-                except Exception:
-                    v = 0
-                pwm.append(max(0, min(65535, v)))
-            try:
-                self.pwm_loop.set_manual_pwm(pwm)
             except Exception:
                 pass
 
@@ -495,18 +474,12 @@ class App(tk.Tk):
         except Exception:
             pass
 
-        # update PWM display fields / mode states
+        # update PWM display fields
         try:
-            mode = self.pwm_mode_var.get()
-            if mode == "udp" and self.pwm_udp:
+            if self.pwm_mode_var.get() == "udp" and self.pwm_udp:
                 vals = self.pwm_udp.get_last()
                 for i, var in enumerate(self.pwm_vars):
                     var.set(str(int(vals[i])))
-                for e in self.pwm_entries:
-                    e.configure(state="readonly")
-            else:
-                for e in self.pwm_entries:
-                    e.configure(state=tk.NORMAL)
         except Exception:
             pass
 
