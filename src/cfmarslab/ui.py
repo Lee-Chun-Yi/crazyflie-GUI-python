@@ -23,6 +23,7 @@ class App(tk.Tk):
         self.state_model = SharedState()
         self.cfg = load_config()
         self.link: LinkManager|None = None
+        self.cf = None
 
         self._coords_running = False
         self._coords_thread: threading.Thread|None = None
@@ -133,10 +134,14 @@ class App(tk.Tk):
         self.btn_xyz_stop  = ttk.Button(row2, text="Stop setpoints", state=tk.DISABLED, command=self.stop_coords)
         self.btn_xyz_start.pack(side=tk.LEFT); self.btn_xyz_stop.pack(side=tk.LEFT, padx=6)
 
-        # Control mode notebook
+        # Arm 按鈕（放在 Controls 區塊、Flight Control 上方）
+        self.btn_arm = ttk.Button(parent, text="Arm", command=self._arm_cf, state=tk.DISABLED)
+        self.btn_arm.pack(anchor=tk.W, pady=(8,0))
+
+        # 控制模式分頁（2-PID / 4-PID）
         self.ctrl_nb = ttk.Notebook(parent)
-        tab2 = ttk.Frame(self.ctrl_nb)
-        tab4 = ttk.Frame(self.ctrl_nb)
+        tab2 = ttk.Frame(self.ctrl_nb)   # 2-PID Controls
+        tab4 = ttk.Frame(self.ctrl_nb)   # 4-PID Controls
         self.ctrl_nb.add(tab2, text="2-PID Controls")
         self.ctrl_nb.add(tab4, text="4-PID Controls")
         self.ctrl_nb.pack(fill=tk.X, pady=(8,0))
@@ -169,7 +174,7 @@ class App(tk.Tk):
         self.btn_pwm_start.pack(side=tk.LEFT)
         self.btn_pwm_stop.pack(side=tk.LEFT, padx=(6,12))
 
-        # Safety (common)
+        # Safety（共用）
         safe = ttk.Labelframe(parent, text="Safety", padding=8); safe.pack(fill=tk.X, pady=(8,0))
         ttk.Button(safe, text="Emergency stop (RPYT=0,0,0,0)", command=self.emergency_stop).pack(side=tk.LEFT)
         ttk.Button(safe, text="Land (ramp down)", command=self.land).pack(side=tk.LEFT, padx=8)
@@ -195,15 +200,24 @@ class App(tk.Tk):
         except Exception:
             bg_color = self.cget("background")
 
-        log_items = ["X", "Y", "Z", "Rot_X", "Rot_Y", "Rot_Z", "Roll", "Pitch", "Yaw", "Thrust"]
+        # Mapping of internal log keys -> checkbox labels displayed in the UI
+        # Keys are stored in lowercase for easy lookup later when samples are
+        # appended.  Using a tuple (key, label) keeps display text unchanged
+        # while normalising access.
+        log_items = [
+            ("x", "X"), ("y", "Y"), ("z", "Z"),
+            ("rot_x", "Rot_X"), ("rot_y", "Rot_Y"), ("rot_z", "Rot_Z"),
+            ("roll", "Roll"), ("pitch", "Pitch"), ("yaw", "Yaw"),
+            ("thrust", "Thrust"),
+        ]
         self.log_opts = {}
 
-        for name in log_items:
+        for key, label in log_items:
             var = tk.BooleanVar(value=False)
-            self.log_opts[name] = var
+            self.log_opts[key] = var
             cb = tk.Checkbutton(
                 parent,
-                text=name,
+                text=label,
                 variable=var,
                 font=("Segoe UI", 10),
                 selectimage=None,
@@ -225,7 +239,9 @@ class App(tk.Tk):
         self.log("Connecting...")
         try:
             self.link = LinkManager(self.state_model, uri); self.link.connect()
+            self.cf = self.link.cf
             self.btn_conn.configure(state=tk.DISABLED); self.btn_disc.configure(state=tk.NORMAL)
+            self.btn_arm.configure(state=tk.NORMAL)
             uris = [u for u in [uri] + self.cfg.recent_uris if u and u != uri]
             self.cfg.recent_uris = [uri] + uris[:7]; save_config(self.cfg)
             self.mru_combo.configure(values=self.cfg.recent_uris)
@@ -238,7 +254,9 @@ class App(tk.Tk):
             if self.setpoints: self.setpoints.stop(); self.setpoints=None
             if self.pwm_loop: self.pwm_loop.stop(); self.pwm_loop=None
             if self.link: self.link.disconnect(); self.link=None
+            self.cf = None
             self.btn_conn.configure(state=tk.NORMAL); self.btn_disc.configure(state=tk.DISABLED)
+            self.btn_arm.configure(state=tk.DISABLED)
             if hasattr(self, "lbl_status"):
                 self.lbl_status.configure(text=" | Disconnected")
             self.log("Disconnected")
@@ -291,6 +309,7 @@ class App(tk.Tk):
         self.btn_sp_start.configure(state=tk.NORMAL); self.btn_sp_stop.configure(state=tk.DISABLED)
         self.log("Setpoint loop stopped")
 
+
     # ---- PWM loop ----
     def _pwm_start(self):
         if self.setpoints and self.setpoints.is_running():
@@ -318,6 +337,14 @@ class App(tk.Tk):
         elif tab == "4-PID Controls":
             if self.setpoints and self.setpoints.is_running():
                 self._sp_stop()
+
+    def _arm_cf(self):
+        try:
+            if self.cf:
+                self.cf.platform.send_arming_request(True)
+                self.log("Arming request sent")
+        except Exception as e:
+            self.log(f"Arming request failed: {e}")
 
     # ---- Safety ----
     def emergency_stop(self):
@@ -348,17 +375,32 @@ class App(tk.Tk):
         sample = {}
         # positions from GUI
         try:
-            if self.log_params["x"].get(): sample["x"] = float(self.x_var.get() or 0.0)
-            if self.log_params["y"].get(): sample["y"] = float(self.y_var.get() or 0.0)
-            if self.log_params["z"].get(): sample["z"] = float(self.z_var.get() or 0.0)
+            if self.log_opts["x"].get():
+                sample["x"] = float(self.x_var.get() or 0.0)
+            if self.log_opts["y"].get():
+                sample["y"] = float(self.y_var.get() or 0.0)
+            if self.log_opts["z"].get():
+                sample["z"] = float(self.z_var.get() or 0.0)
         except Exception:
             pass
-        # rotations from SharedState.rpyth (roll/pitch/yaw)
+        # rotations / setpoints from SharedState.rpyth (roll/pitch/yaw/thrust)
         try:
             with self.state_model.lock:
-                if self.log_params["rot_x"].get(): sample["rot_x"] = float(self.state_model.rpyth.get("roll", 0.0))
-                if self.log_params["rot_y"].get(): sample["rot_y"] = float(self.state_model.rpyth.get("pitch", 0.0))
-                if self.log_params["rot_z"].get(): sample["rot_z"] = float(self.state_model.rpyth.get("yaw", 0.0))
+                rpyth = self.state_model.rpyth
+                if self.log_opts["rot_x"].get():
+                    sample["rot_x"] = float(rpyth.get("roll", 0.0))
+                if self.log_opts["rot_y"].get():
+                    sample["rot_y"] = float(rpyth.get("pitch", 0.0))
+                if self.log_opts["rot_z"].get():
+                    sample["rot_z"] = float(rpyth.get("yaw", 0.0))
+                if self.log_opts.get("roll") and self.log_opts["roll"].get():
+                    sample["roll"] = float(rpyth.get("roll", 0.0))
+                if self.log_opts.get("pitch") and self.log_opts["pitch"].get():
+                    sample["pitch"] = float(rpyth.get("pitch", 0.0))
+                if self.log_opts.get("yaw") and self.log_opts["yaw"].get():
+                    sample["yaw"] = float(rpyth.get("yaw", 0.0))
+                if self.log_opts.get("thrust") and self.log_opts["thrust"].get():
+                    sample["thrust"] = float(rpyth.get("thrust", 0.0))
         except Exception:
             pass
         if sample:
