@@ -5,7 +5,7 @@ from tkinter import ttk, scrolledtext
 from .models import SharedState
 from .config import load_config, save_config
 from .link import LinkManager
-from .control import UDPInput, SetpointLoop, PWMSetpointLoop
+from .control import UDPInput, SetpointLoop, PWMSetpointLoop, PWMUDPReceiver
 import cflib.crtp
 
 UDP_COORD_PORT = 51002
@@ -107,6 +107,7 @@ class App(tk.Tk):
 
         self.setpoints: SetpointLoop|None = None
         self.pwm_loop: PWMSetpointLoop|None = None
+        self.pwm_udp: PWMUDPReceiver|None = None
 
     # ---- helpers ----
     def log(self, s: str):
@@ -163,11 +164,20 @@ class App(tk.Tk):
         # --- 4-PID tab (PWM direct) ---
         pwmf = ttk.Labelframe(tab4, text="PWM Control", padding=8)
         pwmf.pack(fill=tk.X)
-        rowp = ttk.Frame(pwmf); rowp.pack(fill=tk.X)
+        rowm = ttk.Frame(pwmf); rowm.pack(fill=tk.X)
+        self.pwm_mode_var = tk.StringVar(value="manual")
+        ttk.Radiobutton(rowm, text="Manual entry", variable=self.pwm_mode_var,
+                        value="manual", command=self._on_pwm_mode_change).pack(side=tk.LEFT)
+        ttk.Radiobutton(rowm, text="UDP @ 8888", variable=self.pwm_mode_var,
+                        value="udp", command=self._on_pwm_mode_change).pack(side=tk.LEFT, padx=(12,0))
+        rowp = ttk.Frame(pwmf); rowp.pack(fill=tk.X, pady=(4,0))
         self.pwm_vars = [tk.StringVar(value="0") for _ in range(4)]
+        self.pwm_entries: list[ttk.Entry] = []
         for i, var in enumerate(self.pwm_vars):
             ttk.Label(rowp, text=f"m{i+1}").grid(row=0, column=2*i, padx=(0,4))
-            ttk.Entry(rowp, width=8, textvariable=var, state="readonly").grid(row=0, column=2*i+1, padx=(0,8))
+            e = ttk.Entry(rowp, width=8, textvariable=var)
+            e.grid(row=0, column=2*i+1, padx=(0,8))
+            self.pwm_entries.append(e)
         rowb = ttk.Frame(pwmf); rowb.pack(fill=tk.X, pady=(8,0))
         self.btn_pwm_start = ttk.Button(rowb, text="Start", command=self._pwm_start)
         self.btn_pwm_stop  = ttk.Button(rowb, text="Stop", command=self._pwm_stop, state=tk.DISABLED)
@@ -253,6 +263,7 @@ class App(tk.Tk):
         try:
             if self.setpoints: self.setpoints.stop(); self.setpoints=None
             if self.pwm_loop: self.pwm_loop.stop(); self.pwm_loop=None
+            if self.pwm_udp: self.pwm_udp.stop(); self.pwm_udp=None
             if self.link: self.link.disconnect(); self.link=None
             self.cf = None
             self.btn_conn.configure(state=tk.NORMAL); self.btn_disc.configure(state=tk.DISABLED)
@@ -318,14 +329,66 @@ class App(tk.Tk):
             self.log("Not connected"); return
         if not self.pwm_loop:
             self.pwm_loop = PWMSetpointLoop(self.link)
+        mode = self.pwm_mode_var.get()
+        if mode == "manual":
+            pwm = []
+            for var in self.pwm_vars:
+                try:
+                    v = int(var.get())
+                except Exception:
+                    v = 0
+                pwm.append(max(0, min(65535, v)))
+            self.pwm_loop.set_mode("manual")
+            self.pwm_loop.set_manual_pwm(pwm)
+        else:
+            if not self.pwm_udp:
+                self.pwm_udp = PWMUDPReceiver(port=8888)
+            self.pwm_udp.start()
+            self.pwm_loop.attach_udp(self.pwm_udp)
+            self.pwm_loop.set_mode("udp")
         self.pwm_loop.start()
         self.btn_pwm_start.configure(state=tk.DISABLED); self.btn_pwm_stop.configure(state=tk.NORMAL)
         self.log("4PID loop started")
 
     def _pwm_stop(self):
         if self.pwm_loop: self.pwm_loop.stop()
+        if self.pwm_mode_var.get() == "udp" and self.pwm_udp:
+            self.pwm_udp.stop()
         self.btn_pwm_start.configure(state=tk.NORMAL); self.btn_pwm_stop.configure(state=tk.DISABLED)
         self.log("4PID loop stopped")
+
+    def _on_pwm_mode_change(self):
+        mode = self.pwm_mode_var.get()
+        state = tk.NORMAL if mode == "manual" else "readonly"
+        for e in getattr(self, "pwm_entries", []):
+            try:
+                e.configure(state=state)
+            except Exception:
+                pass
+        if self.pwm_loop:
+            try:
+                self.pwm_loop.set_mode(mode)
+            except Exception:
+                pass
+        if mode == "udp" and self.pwm_loop and self.pwm_loop.is_running():
+            if not self.pwm_udp:
+                self.pwm_udp = PWMUDPReceiver(port=8888)
+                self.pwm_udp.start()
+            self.pwm_loop.attach_udp(self.pwm_udp)
+        elif mode == "manual" and self.pwm_loop and self.pwm_loop.is_running():
+            if self.pwm_udp:
+                self.pwm_udp.stop()
+            pwm = []
+            for var in self.pwm_vars:
+                try:
+                    v = int(var.get())
+                except Exception:
+                    v = 0
+                pwm.append(max(0, min(65535, v)))
+            try:
+                self.pwm_loop.set_manual_pwm(pwm)
+            except Exception:
+                pass
 
     def _on_ctrl_tab_change(self, *_):
         if not hasattr(self, 'ctrl_nb'):
@@ -432,11 +495,18 @@ class App(tk.Tk):
         except Exception:
             pass
 
-        # update PWM display fields
+        # update PWM display fields / mode states
         try:
-            if self.pwm_loop:
+            mode = self.pwm_mode_var.get()
+            if mode == "udp" and self.pwm_udp:
+                vals = self.pwm_udp.get_last()
                 for i, var in enumerate(self.pwm_vars):
-                    var.set(str(int(self.pwm_loop.last_pwm[i])))
+                    var.set(str(int(vals[i])))
+                for e in self.pwm_entries:
+                    e.configure(state="readonly")
+            else:
+                for e in self.pwm_entries:
+                    e.configure(state=tk.NORMAL)
         except Exception:
             pass
 
@@ -450,6 +520,7 @@ class App(tk.Tk):
             self._coords_running = False
             if self.setpoints: self.setpoints.stop()
             if self.pwm_loop: self.pwm_loop.stop()
+            if self.pwm_udp: self.pwm_udp.stop()
             if self.link: self.link.disconnect()
         finally:
             self.destroy()

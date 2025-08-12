@@ -2,7 +2,7 @@ from __future__ import annotations
 import socket, struct
 from time import perf_counter, sleep
 from threading import Thread, Event, Lock
-from typing import Optional
+from typing import Optional, List
 
 from .models import SharedState
 
@@ -72,6 +72,61 @@ class UDPInput:
                 sleep(d)
             else:
                 t = perf_counter()
+
+
+class PWMUDPReceiver:
+    """Background UDP listener for 4 PWM values (m1–m4).
+
+    Accepts either little-endian floats (``<4f``) or uint16 (``<4H``) and
+    keeps the last successfully received set. Designed to be lightweight and
+    non-blocking so it can be polled from another thread."""
+
+    def __init__(self, port: int = 8888):
+        self.port = port
+        self._running = Event()
+        self._thread: Optional[Thread] = None
+        self._last = [0, 0, 0, 0]
+
+    # --- public API ---
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._running.set()
+        self._thread = Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running.clear()
+
+    def get_last(self) -> List[int]:
+        return list(self._last)
+
+    # --- worker ---
+    def _run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", self.port))
+        sock.settimeout(0.2)
+        while self._running.is_set():
+            try:
+                data, _ = sock.recvfrom(1024)
+            except socket.timeout:
+                continue
+            except Exception:
+                continue
+            if len(data) != 16:
+                continue
+            vals: List[int] = []
+            try:
+                floats = struct.unpack("<4f", data)
+                vals = [int(max(0, min(65535, v))) for v in floats]
+            except Exception:
+                try:
+                    ushorts = struct.unpack("<4H", data)
+                    vals = [int(max(0, min(65535, v))) for v in ushorts]
+                except Exception:
+                    continue
+            if vals:
+                self._last = vals
 
 
 class SetpointLoop:
@@ -157,16 +212,18 @@ class SetpointLoop:
 
 
 class PWMSetpointLoop:
-    """Receive m1–m4 PWM values via UDP and set Crazyflie motor power."""
+    """Send PWM values to Crazyflie using either manual or UDP input."""
 
-    def __init__(self, link, port: int = 8889, rate_hz: int = 100):
+    def __init__(self, link, rate_hz: int = 100):
         self.link = link
-        self.port = port
         self._rate_hz = max(1, int(rate_hz))
         self._rate_lock = Lock()
         self._run_flag = Event()
         self._thread: Optional[Thread] = None
         self.last_pwm = [0, 0, 0, 0]
+        self._mode = "manual"
+        self._manual_pwm = [0, 0, 0, 0]
+        self._udp: Optional[PWMUDPReceiver] = None
 
     # --- public API ---
     def start(self, rate_hz: Optional[int] = None):
@@ -192,33 +249,34 @@ class PWMSetpointLoop:
         with self._rate_lock:
             return self._rate_hz
 
+    def set_mode(self, mode: str):
+        if mode not in ("manual", "udp"):
+            raise ValueError("mode must be 'manual' or 'udp'")
+        self._mode = mode
+
+    def set_manual_pwm(self, pwm: List[int]):
+        self._manual_pwm = [int(max(0, min(65535, v))) for v in pwm[:4]] + [0]*(4-len(pwm))
+
+    def attach_udp(self, receiver: PWMUDPReceiver):
+        self._udp = receiver
+
     # --- worker ---
     def _run(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("127.0.0.1", self.port))
-        sock.setblocking(False)
-        t = perf_counter()
         motors = ("m1", "m2", "m3", "m4")
+        t = perf_counter()
         while self._run_flag.is_set():
-            try:
-                while True:
-                    data, _ = sock.recvfrom(1024)
-                    if len(data) == 16:
-                        vals = struct.unpack("<4f", data)
-                        pwm_values = [max(0, min(65535, int(v))) for v in vals]
-                        cf = getattr(self.link, "cf", None)
-                        if cf is not None:
-                            for i, m in enumerate(motors):
-                                try:
-                                    cf.param.set_value(f"motorPowerSet.{m}", str(pwm_values[i]))
-                                except Exception:
-                                    pass
-                        self.last_pwm[:] = pwm_values[:]
-            except BlockingIOError:
-                pass
-            except Exception:
-                # swallow and keep running
-                pass
+            if self._mode == "udp" and self._udp:
+                pwm = self._udp.get_last()
+            else:
+                pwm = list(self._manual_pwm)
+            cf = getattr(self.link, "cf", None)
+            if cf is not None:
+                for i, m in enumerate(motors):
+                    try:
+                        cf.param.set_value(f"motorPowerSet.{m}", str(int(pwm[i])))
+                    except Exception:
+                        pass
+            self.last_pwm[:] = pwm[:4]
             with self._rate_lock:
                 dt = 1.0 / float(self._rate_hz)
             t += dt
