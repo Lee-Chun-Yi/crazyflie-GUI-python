@@ -118,7 +118,9 @@ class App(tk.Tk):
         # XYZ → MATLAB
         xyz = ttk.Labelframe(parent, text="XYZ → MATLAB (UDP 51002)", padding=8); xyz.pack(fill=tk.X)
         row = ttk.Frame(xyz); row.pack(fill=tk.X, pady=(0,6))
-        ttk.Label(row, text="X").grid(row=0, column=0, padx=(0,4)); ttk.Label(row, text="Y").grid(row=0, column=2, padx=(12,4)); ttk.Label(row, text="Z").grid(row=0, column=4, padx=(12,4))
+        ttk.Label(row, text="X").grid(row=0, column=0, padx=(0,4))
+        ttk.Label(row, text="Y").grid(row=0, column=2, padx=(12,4))
+        ttk.Label(row, text="Z").grid(row=0, column=4, padx=(12,4))
         self.x_var = tk.StringVar(value="0.0"); self.y_var = tk.StringVar(value="0.0"); self.z_var = tk.StringVar(value="0.0")
         ttk.Entry(row, width=10, textvariable=self.x_var).grid(row=0, column=1)
         ttk.Entry(row, width=10, textvariable=self.y_var).grid(row=0, column=3)
