@@ -1,4 +1,3 @@
-# ===== src/cfmarslab/ui.py (Controls + Log Parameter tab; checkbox-gated logging) =====
 import socket, struct, threading, time
 import tkinter as tk
 from tkinter import ttk, scrolledtext

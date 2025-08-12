@@ -1,4 +1,3 @@
-# ===== src/cfmarslab/control.py (dynamic-rate version) =====
 from __future__ import annotations
 import socket, struct
 from time import perf_counter, sleep
