@@ -3,6 +3,7 @@ from threading import Event, Lock
 from collections import deque
 from typing import Dict, Deque, Tuple
 
+
 @dataclass
 class SharedState:
     # Control inputs (deg, deg/s, thrust)
@@ -13,6 +14,8 @@ class SharedState:
     user_xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     # Telemetry
     vbat: float = 0.0
+    rssi: float = float('nan')       # last received RSSI in dBm
+    latency_ms: float = float('nan') # ms between log callbacks
 
     # Concurrency primitives
     stop_all: Event = field(default_factory=Event)
