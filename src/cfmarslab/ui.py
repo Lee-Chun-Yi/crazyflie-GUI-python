@@ -114,6 +114,13 @@ class App(tk.Tk):
         self.console.configure(state='normal'); self.console.insert('end', s + '\n')
         self.console.configure(state='disabled'); self.console.see('end')
 
+    def _is_4pid_mode_active(self) -> bool:
+        """Return True iff the 4-PID Controls tab is selected."""
+        try:
+            return self.ctrl_nb.tab(self.ctrl_nb.select(), "text") == "4-PID Controls"
+        except Exception:
+            return False
+
     # ---- Controls tab ----
     def _build_controls_tab(self, parent):
         # XYZ → MATLAB
@@ -390,14 +397,36 @@ class App(tk.Tk):
 
     # ---- Safety ----
     def emergency_stop(self):
-        try:
-            if self.link: self.link.send_setpoint(0.0, 0.0, 0.0, 0)
-            self.log("Emergency stop (RPYT=0,0,0,0) sent")
-        except Exception as e:
-            self.log(f"Emergency stop failed: {e}")
+        if self._is_4pid_mode_active():
+            try:
+                if self.pwm_loop and self.pwm_loop.is_running():
+                    self._pwm_stop()
+                if not self.cf:
+                    self.log("Emergency stop: Not connected")
+                    return
+                for i in range(4):
+                    try:
+                        self.cf.param.set_value(f"motorPowerSet.m{i+1}", "0")
+                    except Exception as e:
+                        self.log(f"Emergency stop m{i+1} error: {e}")
+                if getattr(self, "pwm_vars", None):
+                    for var in self.pwm_vars:
+                        try:
+                            var.set("0")
+                        except Exception:
+                            pass
+                self.log("Emergency stop (4-PID): motors set to 0")
+            except Exception as e:
+                self.log(f"Emergency stop failed: {e}")
+        else:
+            try:
+                if self.link: self.link.send_setpoint(0.0, 0.0, 0.0, 0)
+                self.log("Emergency stop (RPYT=0,0,0,0) sent")
+            except Exception as e:
+                self.log(f"Emergency stop failed: {e}")
 
     def land(self):
-        def _ramp():
+        def _ramp_2pid():
             try:
                 if not self.link: self.log("Not connected"); return
                 steps, T = 20, 2.5; thrust = 48000
@@ -409,7 +438,50 @@ class App(tk.Tk):
                 self.log("Land complete")
             except Exception as e:
                 self.log(f"Land error: {e}")
-        threading.Thread(target=_ramp, daemon=True).start()
+
+        def _ramp_4pid():
+            try:
+                if not self.cf:
+                    self.log("Not connected"); return
+                if self.pwm_loop and self.pwm_loop.is_running():
+                    self._pwm_stop()
+                vals = []
+                if self.pwm_loop and getattr(self.pwm_loop, "last_pwm", None):
+                    vals = self.pwm_loop.last_pwm
+                else:
+                    for var in getattr(self, "pwm_vars", []):
+                        try:
+                            vals.append(int(var.get()))
+                        except Exception:
+                            vals.append(0)
+                if len(vals) < 4:
+                    vals.extend([0]*(4-len(vals)))
+                start = int(sum(vals)/4)
+                steps, T = 20, 2.5
+                for i in range(steps):
+                    level = max(int(start * (1 - (i+1)/steps)), 0)
+                    for j in range(4):
+                        try:
+                            self.cf.param.set_value(f"motorPowerSet.m{j+1}", str(level))
+                        except Exception as e:
+                            self.log(f"Land m{j+1} set error: {e}")
+                    time.sleep(T/steps)
+                for j in range(4):
+                    try:
+                        self.cf.param.set_value(f"motorPowerSet.m{j+1}", "0")
+                    except Exception as e:
+                        self.log(f"Land m{j+1} final error: {e}")
+                if getattr(self, "pwm_vars", None):
+                    for var in self.pwm_vars:
+                        try:
+                            var.set("0")
+                        except Exception:
+                            pass
+                self.log("Land complete (4-PID)")
+            except Exception as e:
+                self.log(f"Land error: {e}")
+
+        threading.Thread(target=_ramp_4pid if self._is_4pid_mode_active() else _ramp_2pid, daemon=True).start()
 
     # ---- logging of selected params ----
     def _append_log_params_sample(self):
