@@ -99,16 +99,32 @@ class App(tk.Tk):
         self._trail_artist  = None
         self._point_artist  = None
         self._last_plot_ts  = 0.0
+        self.vrx_hz_var = tk.IntVar(value=30)
+        self.vx_var = tk.StringVar(value="--")
+        self.vy_var = tk.StringVar(value="--")
+        self.vz_var = tk.StringVar(value="--")
+        self._vrx_running = False
+        self._vrx_job = None
+        self.vicon = None
 
         # Build tabs
         self._build_controls_tab(tab_controls)
         self._build_log_param_tab(tab_logparam)
 
-        # Right: Console
-        right = ttk.Labelframe(split, text="Console", padding=6)
-        self.console = scrolledtext.ScrolledText(right, height=18, state="disabled")
+        # Right: 3D plot on top, console bottom
+        right_panel = ttk.Frame(split, padding=6)
+        self.fig = Figure(figsize=(6,4), dpi=100)
+        self.ax3d = self.fig.add_subplot(111, projection="3d")
+        self.ax3d.set_title("Crazyflie Position")
+        self.ax3d.set_xlabel("X"); self.ax3d.set_ylabel("Y"); self.ax3d.set_zlabel("Z")
+        self.canvas3d = FigureCanvasTkAgg(self.fig, master=right_panel)
+        self.canvas3d.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        right_console = ttk.Labelframe(right_panel, text="Console", padding=6)
+        self.console = scrolledtext.ScrolledText(right_console, height=8, state="disabled")
         self.console.pack(fill=tk.BOTH, expand=True)
-        split.add(right, weight=1)
+        right_console.pack(fill=tk.BOTH, expand=False, pady=(6,0))
+        self._apply_axes_bounds()
+        split.add(right_panel, weight=3)
 
         # timers
         self.after(250, self._ui_tick)
@@ -121,14 +137,6 @@ class App(tk.Tk):
         self.setpoints: SetpointLoop|None = None
         self.pwm_loop: PWMSetpointLoop|None = None
         self.pwm_udp: PWMUDPReceiver|None = None
-
-        self.trail_buf = deque(maxlen=20000)   # (t, x, y, z)
-        self.trail_secs_var = tk.IntVar(value=5)    # Show trail (seconds)
-        self.decimate_var   = tk.IntVar(value=1)    # 1 = no decimation
-        self._quiver_artist = None
-        self._trail_artist  = None
-        self._point_artist  = None
-        self._last_plot_ts  = 0.0
 
     # ---- helpers ----
     def log(self, s: str):
@@ -213,11 +221,21 @@ class App(tk.Tk):
         self.btn_pwm_start.pack(side=tk.LEFT)
         self.btn_pwm_stop.pack(side=tk.LEFT, padx=(6,12))
 
-        # Vicon (UDP 51001) 3D plot
-        vicon = ttk.Labelframe(parent, text="Vicon (UDP 51001)", padding=8)
-        vicon.pack(fill=tk.BOTH, pady=(8,0))
+        # Vicon (UDP 51001)
+        vgp = ttk.Labelframe(parent, text="Vicon (UDP 51001)", padding=8)
+        vgp.pack(fill=tk.BOTH, pady=(8,0))
 
-        brow = ttk.Frame(vicon); brow.pack(fill=tk.X)
+        row_top = ttk.Frame(vgp); row_top.pack(fill=tk.X, pady=(0,6))
+        ttk.Label(row_top, text="X").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vx_var, state="readonly").pack(side=tk.LEFT, padx=(0,8))
+        ttk.Label(row_top, text="Y").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vy_var, state="readonly").pack(side=tk.LEFT, padx=(0,8))
+        ttk.Label(row_top, text="Z").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vz_var, state="readonly").pack(side=tk.LEFT, padx=(0,12))
+        ttk.Label(row_top, text="Rate (Hz)").pack(side=tk.LEFT)
+        ttk.Spinbox(row_top, from_=1, to=200, width=6, textvariable=self.vrx_hz_var).pack(side=tk.LEFT, padx=(4,12))
+        self.btn_vrx_start = ttk.Button(row_top, text="Start", command=self._vrx_start)
+        self.btn_vrx_stop  = ttk.Button(row_top, text="Stop",  command=self._vrx_stop, state=tk.DISABLED)
+        self.btn_vrx_start.pack(side=tk.LEFT); self.btn_vrx_stop.pack(side=tk.LEFT, padx=(6,0))
+
+        brow = ttk.Frame(vgp); brow.pack(fill=tk.X)
         ttk.Label(brow, text="X").grid(row=0, column=0, padx=(0,4))
         self.bx0 = tk.StringVar(value="-1.0"); self.bx1 = tk.StringVar(value="1.0")
         ttk.Entry(brow, width=8, textvariable=self.bx0).grid(row=0, column=1)
@@ -232,18 +250,11 @@ class App(tk.Tk):
         ttk.Entry(brow, width=8, textvariable=self.bz1).grid(row=0, column=8)
         ttk.Button(brow, text="Apply", command=lambda: (self._apply_axes_bounds(), self.canvas3d.draw_idle())).grid(row=0, column=9, padx=(12,0))
 
-        optrow = ttk.Frame(vicon); optrow.pack(fill=tk.X, pady=(4,0))
+        optrow = ttk.Frame(vgp); optrow.pack(fill=tk.X, pady=(4,0))
         ttk.Label(optrow, text="Show trail (s)").pack(side=tk.LEFT, padx=(0,4))
         ttk.Spinbox(optrow, from_=0, to=120, width=4, textvariable=self.trail_secs_var).pack(side=tk.LEFT)
         ttk.Label(optrow, text="Decimate").pack(side=tk.LEFT, padx=(12,4))
         ttk.Combobox(optrow, width=4, state="readonly", values=["1","2","5","10"], textvariable=self.decimate_var).pack(side=tk.LEFT)
-
-        self.fig3d = Figure(figsize=(4,3))
-        self.ax3d = self.fig3d.add_subplot(111, projection='3d')
-        self.ax3d.set_xlabel('X'); self.ax3d.set_ylabel('Y'); self.ax3d.set_zlabel('Z')
-        self.canvas3d = FigureCanvasTkAgg(self.fig3d, master=vicon)
-        self.canvas3d.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=(8,0))
-        self._apply_axes_bounds()
 
         # Safety（共用）
         safe = ttk.Labelframe(parent, text="Safety", padding=8); safe.pack(fill=tk.X, pady=(8,0))
@@ -301,6 +312,51 @@ class App(tk.Tk):
             self._quiver_artist = None
         if hasattr(self, "canvas3d"):
             self.canvas3d.draw_idle()
+
+    def _vrx_start(self):
+        try:
+            if not self.vicon:
+                self.vicon = ViconUDP51001(port=51001)
+            self.vicon.start()
+            self._vrx_running = True
+            self.btn_vrx_start.configure(state=tk.DISABLED)
+            self.btn_vrx_stop.configure(state=tk.NORMAL)
+            self._schedule_vrx_tick()
+            self.log("Vicon UDP receive started")
+        except Exception as e:
+            self.log(f"Vicon receive start failed: {e}")
+
+    def _vrx_stop(self):
+        try:
+            self._vrx_running = False
+            if self._vrx_job is not None:
+                try: self.after_cancel(self._vrx_job)
+                except Exception: pass
+                self._vrx_job = None
+            if self.vicon:
+                self.vicon.stop()
+            self.btn_vrx_start.configure(state=tk.NORMAL)
+            self.btn_vrx_stop.configure(state=tk.DISABLED)
+            self.log("Vicon UDP receive stopped")
+        except Exception as e:
+            self.log(f"Vicon receive stop failed: {e}")
+
+    def _schedule_vrx_tick(self):
+        if not self._vrx_running: return
+        period_ms = max(10, int(1000 / max(1, int(self.vrx_hz_var.get() or 1))))
+        self._vrx_tick()
+        self._vrx_job = self.after(period_ms, self._schedule_vrx_tick)
+
+    def _vrx_tick(self):
+        try:
+            if self.vicon:
+                x,y,z,rx,ry,rz = self.vicon.get_last()
+                if x == x and y == y and z == z:
+                    self.vx_var.set(f"{x:.3f}")
+                    self.vy_var.set(f"{y:.3f}")
+                    self.vz_var.set(f"{z:.3f}")
+        except Exception:
+            pass
 
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
@@ -377,6 +433,9 @@ class App(tk.Tk):
             if self.setpoints: self.setpoints.stop(); self.setpoints=None
             if self.pwm_loop: self.pwm_loop.stop(); self.pwm_loop=None
             if self.pwm_udp: self.pwm_udp.stop(); self.pwm_udp=None
+            if getattr(self, "_vrx_running", False):
+                try: self._vrx_stop()
+                except Exception: pass
             if self.link: self.link.disconnect(); self.link=None
             self.cf = None
             self.btn_conn.configure(state=tk.NORMAL); self.btn_disc.configure(state=tk.DISABLED)
@@ -712,6 +771,9 @@ class App(tk.Tk):
             if self.setpoints: self.setpoints.stop()
             if self.pwm_loop: self.pwm_loop.stop()
             if self.pwm_udp: self.pwm_udp.stop()
+            if getattr(self, "_vrx_running", False):
+                try: self._vrx_stop()
+                except Exception: pass
             if self.link: self.link.disconnect()
         finally:
             self.destroy()
