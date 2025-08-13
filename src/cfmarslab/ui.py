@@ -1,6 +1,10 @@
 import socket, struct, threading, time
 import tkinter as tk
 from tkinter import ttk, scrolledtext
+from collections import deque
+import math
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from .models import SharedState
 from .config import load_config, save_config
@@ -109,6 +113,14 @@ class App(tk.Tk):
         self.pwm_loop: PWMSetpointLoop|None = None
         self.pwm_udp: PWMUDPReceiver|None = None
 
+        self.trail_buf = deque(maxlen=20000)   # (t, x, y, z)
+        self.trail_secs_var = tk.IntVar(value=5)    # Show trail (seconds)
+        self.decimate_var   = tk.IntVar(value=1)    # 1 = no decimation
+        self._quiver_artist = None
+        self._trail_artist  = None
+        self._point_artist  = None
+        self._last_plot_ts  = 0.0
+
     # ---- helpers ----
     def log(self, s: str):
         self.console.configure(state='normal'); self.console.insert('end', s + '\n')
@@ -192,10 +204,94 @@ class App(tk.Tk):
         self.btn_pwm_start.pack(side=tk.LEFT)
         self.btn_pwm_stop.pack(side=tk.LEFT, padx=(6,12))
 
+        # Vicon (UDP 51001) 3D plot
+        vicon = ttk.Labelframe(parent, text="Vicon (UDP 51001)", padding=8)
+        vicon.pack(fill=tk.BOTH, pady=(8,0))
+
+        brow = ttk.Frame(vicon); brow.pack(fill=tk.X)
+        ttk.Label(brow, text="X").grid(row=0, column=0, padx=(0,4))
+        self.bx0 = tk.StringVar(value="-1.0"); self.bx1 = tk.StringVar(value="1.0")
+        ttk.Entry(brow, width=8, textvariable=self.bx0).grid(row=0, column=1)
+        ttk.Entry(brow, width=8, textvariable=self.bx1).grid(row=0, column=2)
+        ttk.Label(brow, text="Y").grid(row=0, column=3, padx=(12,4))
+        self.by0 = tk.StringVar(value="-1.0"); self.by1 = tk.StringVar(value="1.0")
+        ttk.Entry(brow, width=8, textvariable=self.by0).grid(row=0, column=4)
+        ttk.Entry(brow, width=8, textvariable=self.by1).grid(row=0, column=5)
+        ttk.Label(brow, text="Z").grid(row=0, column=6, padx=(12,4))
+        self.bz0 = tk.StringVar(value="0.0"); self.bz1 = tk.StringVar(value="1.0")
+        ttk.Entry(brow, width=8, textvariable=self.bz0).grid(row=0, column=7)
+        ttk.Entry(brow, width=8, textvariable=self.bz1).grid(row=0, column=8)
+        ttk.Button(brow, text="Apply", command=lambda: (self._apply_axes_bounds(), self.canvas3d.draw_idle())).grid(row=0, column=9, padx=(12,0))
+
+        optrow = ttk.Frame(vicon); optrow.pack(fill=tk.X, pady=(4,0))
+        ttk.Label(optrow, text="Show trail (s)").pack(side=tk.LEFT, padx=(0,4))
+        ttk.Spinbox(optrow, from_=0, to=120, width=4, textvariable=self.trail_secs_var).pack(side=tk.LEFT)
+        ttk.Label(optrow, text="Decimate").pack(side=tk.LEFT, padx=(12,4))
+        ttk.Combobox(optrow, width=4, state="readonly", values=["1","2","5","10"], textvariable=self.decimate_var).pack(side=tk.LEFT)
+
+        self.fig3d = Figure(figsize=(4,3))
+        self.ax3d = self.fig3d.add_subplot(111, projection='3d')
+        self.ax3d.set_xlabel('X'); self.ax3d.set_ylabel('Y'); self.ax3d.set_zlabel('Z')
+        self.canvas3d = FigureCanvasTkAgg(self.fig3d, master=vicon)
+        self.canvas3d.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=(8,0))
+        self._apply_axes_bounds()
+
         # Safety（共用）
         safe = ttk.Labelframe(parent, text="Safety", padding=8); safe.pack(fill=tk.X, pady=(8,0))
         ttk.Button(safe, text="Emergency stop (RPYT=0,0,0,0)", command=self.emergency_stop).pack(side=tk.LEFT)
         ttk.Button(safe, text="Land (ramp down)", command=self.land).pack(side=tk.LEFT, padx=8)
+
+    def _apply_axes_bounds(self):
+        try:
+            bx0 = float(self.bx0.get()); bx1 = float(self.bx1.get())
+            by0 = float(self.by0.get()); by1 = float(self.by1.get())
+            bz0 = float(self.bz0.get()); bz1 = float(self.bz1.get())
+            if bx0 == bx1: bx1 = bx0 + 1.0
+            if by0 == by1: by1 = by0 + 1.0
+            if bz0 == bz1: bz1 = bz0 + 1.0
+            self.ax3d.set_xlim(min(bx0,bx1), max(bx0,bx1))
+            self.ax3d.set_ylim(min(by0,by1), max(by0,by1))
+            self.ax3d.set_zlim(min(bz0,bz1), max(bz0,bz1))
+        except Exception:
+            pass
+
+    def _draw_quiver(self, x, y, z, roll, pitch, yaw):
+        # Remove previous
+        if self._quiver_artist is not None:
+            try: self._quiver_artist.remove()
+            except Exception: pass
+            self._quiver_artist = None
+        # Compute direction from RPY (Z-Y-X; yaw,pitch,roll)
+        # Body x-axis projected to world:
+        cx, sx = math.cos(roll),  math.sin(roll)
+        cy, sy = math.cos(pitch), math.sin(pitch)
+        cz, sz = math.cos(yaw),   math.sin(yaw)
+        # R = Rz(yaw) * Ry(pitch) * Rx(roll)
+        dx =  cy*cz
+        dy =  cy*sz
+        dz = -sy
+        length = 0.2 * max(1.0, abs(self.ax3d.get_zlim()[1]-self.ax3d.get_zlim()[0]))/5.0
+        try:
+            self._quiver_artist = self.ax3d.quiver(x, y, z, dx, dy, dz, length=length, normalize=True)
+        except Exception:
+            self._quiver_artist = None
+
+    def _vicon_clear(self):
+        self.trail_buf.clear()
+        if self._trail_artist is not None:
+            try: self._trail_artist.remove()
+            except Exception: pass
+            self._trail_artist = None
+        if self._point_artist is not None:
+            try: self._point_artist.remove()
+            except Exception: pass
+            self._point_artist = None
+        if self._quiver_artist is not None:
+            try: self._quiver_artist.remove()
+            except Exception: pass
+            self._quiver_artist = None
+        if hasattr(self, "canvas3d"):
+            self.canvas3d.draw_idle()
 
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
@@ -557,6 +653,47 @@ class App(tk.Tk):
 
         # record only selected parameters
         self._append_log_params_sample()
+        # 3D Vicon plot
+        last = None
+        try:
+            if hasattr(self, "vicon") and self.vicon:
+                last = self.vicon.get_last()
+        except Exception:
+            last = None
+        if last:
+            x, y, z, rx, ry, rz = last
+            now = time.time()
+            self.trail_buf.append((now, x, y, z))
+            self._apply_axes_bounds()
+            if self._point_artist is None:
+                self._point_artist = self.ax3d.scatter([x], [y], [z], s=12)
+            else:
+                self._point_artist._offsets3d = ([x], [y], [z])
+            self._draw_quiver(x, y, z, roll=rx, pitch=ry, yaw=rz)
+            secs = max(0, int(self.trail_secs_var.get() or 0))
+            k = max(1, int(self.decimate_var.get() or 1))
+            if secs > 0:
+                pts = [(tx, xx, yy, zz) for (tx, xx, yy, zz) in self.trail_buf if now - tx <= secs]
+                if len(pts) >= 2:
+                    xs = [p[1] for p in pts][::k]
+                    ys = [p[2] for p in pts][::k]
+                    zs = [p[3] for p in pts][::k]
+                    if self._trail_artist is None:
+                        self._trail_artist, = self.ax3d.plot(xs, ys, zs, linewidth=1)
+                    else:
+                        self._trail_artist.set_data(xs, ys)
+                        self._trail_artist.set_3d_properties(zs)
+                elif self._trail_artist is not None:
+                    try: self._trail_artist.remove()
+                    except Exception: pass
+                    self._trail_artist = None
+            elif self._trail_artist is not None:
+                try: self._trail_artist.remove()
+                except Exception: pass
+                self._trail_artist = None
+            if now - self._last_plot_ts >= 0.1:
+                self.canvas3d.draw_idle()
+                self._last_plot_ts = now
 
         self.after(250, self._ui_tick)
 
