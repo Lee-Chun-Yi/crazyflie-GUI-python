@@ -196,7 +196,7 @@ class App(tk.Tk):
         self.pwm_mode_var = tk.StringVar(value="manual")
         ttk.Radiobutton(rowm, text="Manual entry", variable=self.pwm_mode_var,
                         value="manual", command=self._on_pwm_mode_change).pack(side=tk.LEFT)
-        ttk.Radiobutton(rowm, text="UDP @ 8888", variable=self.pwm_mode_var,
+        ttk.Radiobutton(rowm, text="UDP 8888", variable=self.pwm_mode_var,
                         value="udp", command=self._on_pwm_mode_change).pack(side=tk.LEFT, padx=(12,0))
         rowp = ttk.Frame(pwmf); rowp.pack(fill=tk.X, pady=(4,0))
         self.pwm_vars = [tk.StringVar(value="0") for _ in range(4)]
