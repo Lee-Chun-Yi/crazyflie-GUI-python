@@ -91,6 +91,15 @@ class App(tk.Tk):
         self.nb.pack(fill=tk.BOTH, expand=True)
         split.add(left_frame, weight=0)
 
+        # Vicon plot state
+        self.trail_buf = deque(maxlen=20000)   # (t, x, y, z)
+        self.trail_secs_var = tk.IntVar(value=5)    # Show trail (seconds)
+        self.decimate_var   = tk.IntVar(value=1)    # 1 = no decimation
+        self._quiver_artist = None
+        self._trail_artist  = None
+        self._point_artist  = None
+        self._last_plot_ts  = 0.0
+
         # Build tabs
         self._build_controls_tab(tab_controls)
         self._build_log_param_tab(tab_logparam)
