@@ -1,4 +1,4 @@
-import socket, struct, threading, time
+import socket, struct, threading, time, queue, logging, sys, traceback
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 from collections import deque
@@ -32,6 +32,35 @@ class App(tk.Tk):
 
         self._coords_running = False
         self._coords_thread: threading.Thread|None = None
+
+        self._log_q = queue.Queue()
+        self.enqueue_log = lambda s: self._log_q.put(s if isinstance(s, str) else str(s))
+
+        def _thread_excepthook(args):
+            lines = traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+            self.enqueue_log("\n".join(lines).rstrip())
+
+        threading.excepthook = _thread_excepthook
+
+        class _StdWriter:
+            def __init__(self, q):
+                self.q = q
+                self.buf = ""
+
+            def write(self, s):
+                self.buf += s
+                while "\n" in self.buf:
+                    line, self.buf = self.buf.split("\n", 1)
+                    if line:
+                        self.q.put(line)
+                    else:
+                        self.q.put("")
+
+            def flush(self):
+                pass
+
+        sys.stdout = _StdWriter(self._log_q)
+        sys.stderr = _StdWriter(self._log_q)
 
         root = ttk.Frame(self, padding=8); root.pack(fill=tk.BOTH, expand=True)
 
@@ -317,7 +346,7 @@ class App(tk.Tk):
     def _vrx_start(self):
         try:
             if not self.vicon:
-                self.vicon = ViconUDP51001(port=51001)
+                self.vicon = ViconUDP51001(port=51001, logger=self.enqueue_log)
             self.vicon.start()
             self._vrx_running = True
             self.btn_vrx_start.configure(state=tk.DISABLED)
@@ -692,6 +721,12 @@ class App(tk.Tk):
 
     # ---- UI tick ----
     def _ui_tick(self):
+        while not self._log_q.empty():
+            try:
+                self.log(self._log_q.get())
+            except Exception:
+                pass
+
         # telemetry heads-up
         with self.state_model.lock:
             v = float(self.state_model.vbat or 0.0)
