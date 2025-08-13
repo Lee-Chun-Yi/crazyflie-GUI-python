@@ -176,9 +176,10 @@ class App(tk.Tk):
         self.console.pack(fill=tk.BOTH, expand=True)
         right_console.pack(fill=tk.BOTH, expand=False, pady=(6,0))
 
+        split.add(right_panel, weight=3)
+
         self._apply_axes_bounds()
         self._update_view()
-        split.add(right_panel, weight=3)
 
         # timers
         self.after(250, self._ui_tick)
@@ -291,15 +292,15 @@ class App(tk.Tk):
 
         brow = ttk.Frame(vgp); brow.pack(fill=tk.X)
         ttk.Label(brow, text="X").grid(row=0, column=0, padx=(0,4))
-        self.bx0 = tk.StringVar(value="-1.0"); self.bx1 = tk.StringVar(value="1.0")
+        self.bx0 = tk.StringVar(value="-1000"); self.bx1 = tk.StringVar(value="1000")
         ttk.Entry(brow, width=8, textvariable=self.bx0).grid(row=0, column=1)
         ttk.Entry(brow, width=8, textvariable=self.bx1).grid(row=0, column=2)
         ttk.Label(brow, text="Y").grid(row=0, column=3, padx=(12,4))
-        self.by0 = tk.StringVar(value="-1.0"); self.by1 = tk.StringVar(value="1.0")
+        self.by0 = tk.StringVar(value="-1000"); self.by1 = tk.StringVar(value="1000")
         ttk.Entry(brow, width=8, textvariable=self.by0).grid(row=0, column=4)
         ttk.Entry(brow, width=8, textvariable=self.by1).grid(row=0, column=5)
         ttk.Label(brow, text="Z").grid(row=0, column=6, padx=(12,4))
-        self.bz0 = tk.StringVar(value="0.0"); self.bz1 = tk.StringVar(value="1.0")
+        self.bz0 = tk.StringVar(value="0"); self.bz1 = tk.StringVar(value="1500")
         ttk.Entry(brow, width=8, textvariable=self.bz0).grid(row=0, column=7)
         ttk.Entry(brow, width=8, textvariable=self.bz1).grid(row=0, column=8)
         ttk.Button(brow, text="Apply", command=lambda: (self._apply_axes_bounds(), self.canvas3d.draw_idle())).grid(row=0, column=9, padx=(12,0))
