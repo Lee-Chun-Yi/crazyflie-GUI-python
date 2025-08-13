@@ -143,17 +143,41 @@ class App(tk.Tk):
 
         # Right: 3D plot on top, console bottom
         right_panel = ttk.Frame(split, padding=6)
+
+        plot_container = ttk.Frame(right_panel)
+        plot_container.pack(fill=tk.BOTH, expand=True)
+
         self.fig = Figure(figsize=(6,4), dpi=100)
         self.ax3d = self.fig.add_subplot(111, projection="3d")
-        self.ax3d.set_title("Crazyflie Position")
+        self.fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.98)
         self.ax3d.set_xlabel("X"); self.ax3d.set_ylabel("Y"); self.ax3d.set_zlabel("Z")
-        self.canvas3d = FigureCanvasTkAgg(self.fig, master=right_panel)
-        self.canvas3d.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        self.azim_var = tk.DoubleVar(value=-60.0)
+        self.elev_var = tk.DoubleVar(value=20.0)
+
+        self.canvas3d = FigureCanvasTkAgg(self.fig, master=plot_container)
+        self.canvas3d.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        self.elev_scale = ttk.Scale(plot_container, from_=90.0, to=-90.0,
+                                    variable=self.elev_var, orient=tk.VERTICAL,
+                                    command=self._update_view)
+        self.elev_scale.grid(row=0, column=1, sticky="ns")
+
+        self.azim_scale = ttk.Scale(plot_container, from_=-180.0, to=180.0,
+                                    variable=self.azim_var, orient=tk.HORIZONTAL,
+                                    command=self._update_view)
+        self.azim_scale.grid(row=1, column=0, sticky="ew")
+
+        plot_container.grid_rowconfigure(0, weight=1)
+        plot_container.grid_columnconfigure(0, weight=1)
+
         right_console = ttk.Labelframe(right_panel, text="Console", padding=6)
         self.console = scrolledtext.ScrolledText(right_console, height=8, state="disabled")
         self.console.pack(fill=tk.BOTH, expand=True)
         right_console.pack(fill=tk.BOTH, expand=False, pady=(6,0))
+
         self._apply_axes_bounds()
+        self._update_view()
         split.add(right_panel, weight=3)
 
         # timers
@@ -304,6 +328,12 @@ class App(tk.Tk):
             self.ax3d.set_zlim(min(bz0,bz1), max(bz0,bz1))
         except Exception:
             pass
+
+    def _update_view(self, *_):
+        az = float(self.azim_var.get())
+        el = float(self.elev_var.get())
+        self.ax3d.view_init(elev=el, azim=az)
+        self.canvas3d.draw_idle()
 
     def _draw_quiver(self, x, y, z, roll, pitch, yaw):
         # Remove previous
