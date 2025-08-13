@@ -10,6 +10,7 @@ from .models import SharedState
 from .config import load_config, save_config
 from .link import LinkManager
 from .control import UDPInput, SetpointLoop, PWMSetpointLoop, PWMUDPReceiver
+from .vicon import ViconUDP51001
 import cflib.crtp
 
 UDP_COORD_PORT = 51002
