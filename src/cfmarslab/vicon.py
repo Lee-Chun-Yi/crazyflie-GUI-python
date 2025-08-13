@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import socket
 import struct
+import errno
 from threading import Event, Thread
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Callable
 
 
 class ViconUDP51001:
@@ -26,14 +27,24 @@ class ViconUDP51001:
     set is stored and returned by :meth:`get_last`.
     """
 
-    def __init__(self, port: int = 51001):
+    def __init__(self, port: int = 51001, logger: Optional[Callable[[str], None]] = None):
         self.port = port
+        self._logger = logger
         self._running = Event()
         self._thread: Optional[Thread] = None
         nan = float("nan")
         self._last: Tuple[float, float, float, float, float, float] = (
             nan, nan, nan, nan, nan, nan
         )
+
+    def _log(self, msg: str) -> None:
+        if self._logger:
+            try:
+                self._logger(msg)
+            except Exception:
+                pass
+        else:
+            print(msg)
 
     # --- public API -----------------------------------------------------
     def start(self) -> None:
@@ -54,26 +65,61 @@ class ViconUDP51001:
 
     # --- worker ---------------------------------------------------------
     def _run(self) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock = None
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.bind(("127.0.0.1", self.port))
+        except OSError as e:
+            if getattr(e, "errno", None) == errno.EADDRINUSE or getattr(e, "winerror", None) == 10048:
+                self._log(
+                    f"[Vicon] Port {self.port} already in use. Another instance or process is bound. Receiver not started."
+                )
+            else:
+                self._log(f"[Vicon] Socket error: {e}")
+            self._running.clear()
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            return
+        except Exception as e:
+            self._log(f"[Vicon] Init error: {e}")
+            self._running.clear()
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            return
+
+        try:
             sock.settimeout(0.2)
+            recv_warned = False
+            unpack_warned = False
             while self._running.is_set():
                 try:
                     data, _ = sock.recvfrom(1024)
                 except socket.timeout:
                     continue
-                except Exception:
+                except Exception as e:
+                    if not recv_warned:
+                        self._log(f"[Vicon] recv error: {e}")
+                        recv_warned = True
                     continue
                 if len(data) != 24:
                     continue
                 try:
                     vals = struct.unpack("<6f", data)
-                except Exception:
+                except Exception as e:
+                    if not unpack_warned:
+                        self._log(f"[Vicon] unpack error: {e}")
+                        unpack_warned = True
                     continue
                 self._last = tuple(float(v) for v in vals)
         finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
