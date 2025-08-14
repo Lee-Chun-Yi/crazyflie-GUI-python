@@ -4,6 +4,7 @@ from time import perf_counter, perf_counter_ns
 from threading import Thread, Event, Lock
 from typing import Optional, List
 from queue import Queue
+from collections import deque
 
 from .models import SharedState
 from .utils import set_realtime_priority
@@ -186,6 +187,12 @@ class SetpointLoop:
         self._run_flag = Event()
         self._thread: Optional[Thread] = None
         self._sender = _SendQueue()
+        # timing stats
+        self._jitter_buf = deque(maxlen=5000)
+        self._miss_count = 0
+        self._total_count = 0
+        self._timing_lock = Lock()
+        self._last_send_time: Optional[float] = None
         # actual rate measurement
         self._count = 0
         self._t_rate = perf_counter()
@@ -197,6 +204,11 @@ class SetpointLoop:
             self.set_rate(rate_hz)
         if self._thread and self._thread.is_alive():
             return
+        with self._timing_lock:
+            self._jitter_buf.clear()
+            self._miss_count = 0
+            self._total_count = 0
+        self._last_send_time = None
         self._sender.start()
         self._run_flag.set()
         self._thread = Thread(target=self._run, daemon=True)
@@ -224,13 +236,19 @@ class SetpointLoop:
         """Return the last computed actual send rate in Hz (1s average)."""
         return float(self._actual_rate_hz)
 
+    def get_timing_snapshot(self):
+        with self._timing_lock:
+            return list(self._jitter_buf), int(self._miss_count), int(self._total_count)
+
     # --- worker ---
     def _run(self):
         wait = Event()
         t_ns = perf_counter_ns()
-        # perf_counter_ns + Event.wait loop keeps jitter low (<~2ms)
+        t_target = perf_counter()
         while self._run_flag.is_set() and not self.state.stop_all.is_set():
-            # fetch once per tick
+            with self._rate_lock:
+                dt = 1.0 / float(self._rate_hz)
+                dt_ns = int(dt * 1_000_000_000)
             with self.state.lock:
                 vbat = float(self.state.vbat or 0.0)
                 r = float(self.state.rpyth.get("roll", 0.0))
@@ -242,18 +260,25 @@ class SetpointLoop:
                 if th <= 48000:
                     r = p = y = 0.0
             self._sender.enqueue(self.link.send_setpoint, r, p, y, th)
+            now = perf_counter()
+            dt_real = now - self._last_send_time if self._last_send_time is not None else dt
+            jitter_abs = abs(dt_real - dt)
+            lateness = max(0.0, now - t_target)
+            miss = lateness > 0.5 * dt
+            with self._timing_lock:
+                self._jitter_buf.append(jitter_abs)
+                self._total_count += 1
+                if miss:
+                    self._miss_count += 1
+            self._last_send_time = now
             # --- actual rate accounting ---
             self._count += 1
-            now = perf_counter()
             elapsed = now - self._t_rate
             if elapsed >= 1.0:
                 self._actual_rate_hz = self._count / elapsed
                 self._count = 0
                 self._t_rate = now
-
-            # timing
-            with self._rate_lock:
-                dt_ns = int(1_000_000_000 / float(self._rate_hz))
+            t_target += dt
             t_ns += dt_ns
             while True:
                 remaining = t_ns - perf_counter_ns()
@@ -277,6 +302,12 @@ class PWMSetpointLoop:
         self._mode = "manual"
         self._manual_pwm = [0, 0, 0, 0]
         self._udp: Optional[PWMUDPReceiver] = None
+        # timing stats
+        self._jitter_buf = deque(maxlen=5000)
+        self._miss_count = 0
+        self._total_count = 0
+        self._timing_lock = Lock()
+        self._last_send_time: Optional[float] = None
         # actual rate measurement
         self._count = 0
         self._t_rate = perf_counter()
@@ -288,6 +319,11 @@ class PWMSetpointLoop:
             self.set_rate(rate_hz)
         if self._thread and self._thread.is_alive():
             return
+        with self._timing_lock:
+            self._jitter_buf.clear()
+            self._miss_count = 0
+            self._total_count = 0
+        self._last_send_time = None
         self._sender.start()
         self._run_flag.set()
         self._thread = Thread(target=self._run, daemon=True)
@@ -313,6 +349,10 @@ class PWMSetpointLoop:
 
     def get_actual_rate(self) -> float:
         return float(self._actual_rate_hz)
+
+    def get_timing_snapshot(self):
+        with self._timing_lock:
+            return list(self._jitter_buf), int(self._miss_count), int(self._total_count)
 
     def set_mode(self, mode: str):
         if mode not in ("manual", "udp"):
@@ -340,24 +380,36 @@ class PWMSetpointLoop:
     def _run(self):
         wait = Event()
         t_ns = perf_counter_ns()
-        # ns-resolution timing with Event.wait loop (~2ms worst-case drift)
+        t_target = perf_counter()
         while self._run_flag.is_set():
+            with self._rate_lock:
+                dt = 1.0 / float(self._rate_hz)
+                dt_ns = int(dt * 1_000_000_000)
             if self._mode == "udp" and self._udp:
                 pwm = self._udp.get_last()
             else:
                 pwm = list(self._manual_pwm)
             self.last_pwm[:] = pwm[:4]
             self._sender.enqueue(self._dispatch_pwm, pwm)
+            now = perf_counter()
+            dt_real = now - self._last_send_time if self._last_send_time is not None else dt
+            jitter_abs = abs(dt_real - dt)
+            lateness = max(0.0, now - t_target)
+            miss = lateness > 0.5 * dt
+            with self._timing_lock:
+                self._jitter_buf.append(jitter_abs)
+                self._total_count += 1
+                if miss:
+                    self._miss_count += 1
+            self._last_send_time = now
             # --- actual rate accounting ---
             self._count += 1
-            now = perf_counter()
             elapsed = now - self._t_rate
             if elapsed >= 1.0:
                 self._actual_rate_hz = self._count / elapsed
                 self._count = 0
                 self._t_rate = now
-            with self._rate_lock:
-                dt_ns = int(1_000_000_000 / float(self._rate_hz))
+            t_target += dt
             t_ns += dt_ns
             while True:
                 remaining = t_ns - perf_counter_ns()

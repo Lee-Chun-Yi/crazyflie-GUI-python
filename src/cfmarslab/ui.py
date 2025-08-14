@@ -101,12 +101,20 @@ class App(tk.Tk):
         # Telemetry top-right
         style = ttk.Style(self)
         style.configure("Telemetry.TLabel", font=("Segoe UI", 12, "bold"), foreground="#0044cc")
-        self.lbl_vbat = ttk.Label(top, text="VBAT: -- V", style="Telemetry.TLabel")
-        self.lbl_vbat.pack(side=tk.RIGHT, padx=(12,0))
-        self.lbl_rssi = ttk.Label(top, text="RSSI: --", style="Telemetry.TLabel")
-        self.lbl_rssi.pack(side=tk.RIGHT, padx=(12,0))
-        self.lbl_latency = ttk.Label(top, text="Latency: -- ms", style="Telemetry.TLabel")
-        self.lbl_latency.pack(side=tk.RIGHT, padx=(12,0))
+        tele_box = ttk.Frame(top)
+        tele_box.pack(side=tk.RIGHT, padx=(12,0))
+        tele_row1 = ttk.Frame(tele_box)
+        self.lbl_latency = ttk.Label(tele_row1, text="Latency: -- ms", style="Telemetry.TLabel")
+        self.lbl_latency.pack(side=tk.LEFT, padx=(12,0))
+        self.lbl_rssi = ttk.Label(tele_row1, text="RSSI: --", style="Telemetry.TLabel")
+        self.lbl_rssi.pack(side=tk.LEFT, padx=(12,0))
+        self.lbl_vbat = ttk.Label(tele_row1, text="VBAT: -- V", style="Telemetry.TLabel")
+        self.lbl_vbat.pack(side=tk.LEFT, padx=(12,0))
+        tele_row1.pack(anchor="e")
+        tele_row2 = ttk.Frame(tele_box)
+        self.lbl_ctrl_timing = ttk.Label(tele_row2, text="Timing: P95 -- ms  |  P99 -- ms  |  Miss -- %", style="Telemetry.TLabel")
+        self.lbl_ctrl_timing.pack(side=tk.LEFT, padx=(12,0))
+        tele_row2.pack(anchor="e")
 
         # --- Main split ---
         split = ttk.Panedwindow(root, orient=tk.HORIZONTAL); split.pack(fill=tk.BOTH, expand=True, pady=(8,0))
@@ -772,6 +780,32 @@ class App(tk.Tk):
         self.title(f"Crazyflie GUI — VBAT: {v:.2f} V"); self.lbl_vbat.configure(text=f"VBAT: {v:.2f} V")
         self.lbl_rssi.configure(text=f"RSSI: {rssi:.0f} dBm" if rssi==rssi else "RSSI: --")
         self.lbl_latency.configure(text=f"Latency: {lat:.1f} ms" if lat==lat else "Latency: -- ms")
+
+        # control timing KPIs
+        try:
+            loop = None
+            if self.setpoints and self.setpoints.is_running():
+                loop = self.setpoints
+            elif self.pwm_loop and self.pwm_loop.is_running():
+                loop = self.pwm_loop
+            if loop:
+                jbuf, miss, total = loop.get_timing_snapshot()
+                j_ms = [v * 1000.0 for v in jbuf]
+                n = len(j_ms)
+                if n >= 5:
+                    vals = sorted(j_ms)
+                    p95 = vals[int(0.95 * (n - 1))]
+                    p99 = vals[int(0.99 * (n - 1))]
+                else:
+                    p95 = float("nan")
+                    p99 = float("nan")
+                miss_pct = 100.0 * miss / total if total > 0 else float("nan")
+                self.lbl_ctrl_timing.configure(
+                    text=f"Timing: P95 {p95:.2f} ms  |  P99 {p99:.2f} ms  |  Miss {miss_pct:.2f} %")
+            else:
+                self.lbl_ctrl_timing.configure(text="Timing: P95 -- ms  |  P99 -- ms  |  Miss -- %")
+        except Exception:
+            pass
 
         # setpoint loop actual rate label (if available)
         try:
