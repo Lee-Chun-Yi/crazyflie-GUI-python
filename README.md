@@ -39,15 +39,37 @@ This is project is also suit to anyone who is bridging  **MATLAB**  and **Crazyf
 3. Arm and start either **2‑PID Controls** or **4‑PID Controls (PWM)**, tuning rates as needed.  
 4. Observe telemetry, timing metrics, and the 3D view; adjust bounds, trails, or camera angles.  
 5. Use **Land** or **Emergency stop**, clear the console if needed, then **Disconnect**.
+   
+---
 
 ## Project Structure
 
-* `src/`
-  Main GUI source code, organized into modules for connection handling, flight control, and logging.
+* `src/cfmarslab`
 
-
-* `docs/`
-  User guides, setup instructions, and troubleshooting reference.
+    
+  * `ui.py`
+    
+    Tk GUI, top telemetry, 3D plot, tabs
+    
+  * `control.py`
+    
+     SetpointLoop (RPYT), PWMSetpointLoop, UDPInput, PWMUDPReceiver
+    
+  * `models.py`
+    
+    shared state/model
+    
+  * `link.py`
+    
+     Crazyflie link/commander wrapper
+    
+  * `vicon.py`
+    
+    UDP 51001 receiver (x,y,z,rot) for 3D/trail
+    
+  * `config.py`
+    
+    app config: rates, safety, persistence
 
 ---
 
