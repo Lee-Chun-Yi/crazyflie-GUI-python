@@ -4,7 +4,7 @@ We named this GUI as: cfmarslab.
 
 This repository is a **GUI-based control interface** for the [NCKU-Quadrotor-Navigation](https://github.com/Lee-Chun-Yi/NCKU-Quadrotor-Navigation) project.
 
-This is project is also suit to anyone who is bridging  **MATLAB**  and **Crazyflie** in UAV control.
+This is project is also suit to anyone who is bridging  **MATLAB**  and **Crazyflie** in UAV control, and of course, using **Vicon** as the 6DOF source.
 
 
 ## Key functions
