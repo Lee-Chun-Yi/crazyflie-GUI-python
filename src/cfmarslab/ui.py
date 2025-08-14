@@ -439,6 +439,11 @@ class App(tk.Tk):
 
     # ---- Log Parameter tab (implementation) ----
     def _build_logs_tab(self, parent):
+        toolbar = ttk.Frame(parent)
+        toolbar.pack(fill="x", pady=(0,6))
+        self.btn_clear_console = ttk.Button(toolbar, text="Clear", command=self._on_clear_console)
+        self.btn_clear_console.pack(side="left")
+
         # 建立打勾圖案
         check_font = ("Segoe UI Symbol", 12)
         self.check_symbol = tk.Label(parent, text="✔", font=check_font, fg="green")
@@ -480,8 +485,13 @@ class App(tk.Tk):
             )
             cb.pack(anchor="w", pady=1)
 
-
-
+    def _on_clear_console(self):
+        try:
+            self.console.configure(state="normal")
+            self.console.delete("1.0", "end")
+            self.console.configure(state="disabled")
+        except Exception:
+            pass
 
     # ---- connection ----
     def on_connect(self):
