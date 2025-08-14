@@ -277,6 +277,10 @@ class PWMSetpointLoop:
         self._mode = "manual"
         self._manual_pwm = [0, 0, 0, 0]
         self._udp: Optional[PWMUDPReceiver] = None
+        # actual rate measurement
+        self._count = 0
+        self._t_rate = perf_counter()
+        self._actual_rate_hz = 0.0
 
     # --- public API ---
     def start(self, rate_hz: Optional[int] = None):
@@ -306,6 +310,9 @@ class PWMSetpointLoop:
     def get_rate(self) -> int:
         with self._rate_lock:
             return self._rate_hz
+
+    def get_actual_rate(self) -> float:
+        return float(self._actual_rate_hz)
 
     def set_mode(self, mode: str):
         if mode not in ("manual", "udp"):
@@ -341,6 +348,14 @@ class PWMSetpointLoop:
                 pwm = list(self._manual_pwm)
             self.last_pwm[:] = pwm[:4]
             self._sender.enqueue(self._dispatch_pwm, pwm)
+            # --- actual rate accounting ---
+            self._count += 1
+            now = perf_counter()
+            elapsed = now - self._t_rate
+            if elapsed >= 1.0:
+                self._actual_rate_hz = self._count / elapsed
+                self._count = 0
+                self._t_rate = now
             with self._rate_lock:
                 dt_ns = int(1_000_000_000 / float(self._rate_hz))
             t_ns += dt_ns

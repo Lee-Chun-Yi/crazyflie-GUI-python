@@ -275,6 +275,11 @@ class App(tk.Tk):
         self.btn_pwm_stop  = ttk.Button(rowb, text="Stop", command=self._pwm_stop, state=tk.DISABLED)
         self.btn_pwm_start.pack(side=tk.LEFT)
         self.btn_pwm_stop.pack(side=tk.LEFT, padx=(6,12))
+        self.pwm_hz_var = tk.IntVar(value=200)
+        ttk.Label(rowb, text="Rate (Hz)").pack(side=tk.LEFT)
+        ttk.Spinbox(rowb, from_=1, to=1000, width=6, textvariable=self.pwm_hz_var).pack(side=tk.LEFT, padx=(4,0))
+        self.lbl_pwm_actual = ttk.Label(rowb, text="Actual: -- Hz")
+        self.lbl_pwm_actual.pack(side=tk.LEFT, padx=(12,0))
 
         # Vicon (UDP 51001)
         vgp = ttk.Labelframe(parent, text="Vicon (UDP 51001)", padding=8)
@@ -579,6 +584,7 @@ class App(tk.Tk):
             self.pwm_udp.start()
             self.pwm_loop.attach_udp(self.pwm_udp)
             self.pwm_loop.set_mode("udp")
+        self.pwm_loop.set_rate(int(self.pwm_hz_var.get()))
         self.pwm_loop.start()
         self.btn_pwm_start.configure(state=tk.DISABLED); self.btn_pwm_stop.configure(state=tk.NORMAL)
         self.log("4PID loop started")
@@ -774,6 +780,16 @@ class App(tk.Tk):
                 self.lbl_sp_actual.configure(text=f"Actual: {ar:.1f} Hz")
             else:
                 self.lbl_sp_actual.configure(text="Actual: -- Hz")
+        except Exception:
+            pass
+
+        # PWM loop actual rate label (if available)
+        try:
+            if self.pwm_loop and self.pwm_loop.is_running():
+                ar = self.pwm_loop.get_actual_rate()
+                self.lbl_pwm_actual.configure(text=f"Actual: {ar:.1f} Hz")
+            else:
+                self.lbl_pwm_actual.configure(text="Actual: -- Hz")
         except Exception:
             pass
 
