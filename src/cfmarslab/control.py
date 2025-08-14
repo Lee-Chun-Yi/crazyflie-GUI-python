@@ -3,6 +3,7 @@ import socket, struct
 from time import perf_counter, perf_counter_ns
 from threading import Thread, Event, Lock
 from typing import Optional, List
+from queue import Queue
 
 from .models import SharedState
 from .utils import set_realtime_priority
@@ -134,6 +135,46 @@ class PWMUDPReceiver:
                 self._last = vals
 
 
+class _SendQueue:
+    """Worker thread processing queued send operations."""
+
+    def __init__(self):
+        self.queue: Queue = Queue()
+        self._worker: Optional[Thread] = None
+
+    def start(self):
+        if self._worker and self._worker.is_alive():
+            return
+        self._worker = Thread(target=self._run, daemon=True)
+        self._worker.start()
+
+    def stop(self):
+        if not self._worker:
+            return
+        # wait for queued messages to be sent
+        self.queue.join()
+        # signal the worker to exit
+        self.queue.put(None)
+        self._worker.join()
+
+    def enqueue(self, func, *args, **kwargs):
+        self.queue.put((func, args, kwargs))
+
+    def _run(self):
+        while True:
+            item = self.queue.get()
+            if item is None:
+                self.queue.task_done()
+                break
+            func, args, kwargs = item
+            try:
+                func(*args, **kwargs)
+            except Exception:
+                pass
+            finally:
+                self.queue.task_done()
+
+
 class SetpointLoop:
     """Send RPYT to Crazyflie at a fixed (adjustable) frequency, and
     measure the *actual* send rate averaged over ~1s windows."""
@@ -144,6 +185,7 @@ class SetpointLoop:
         self._rate_lock = Lock()
         self._run_flag = Event()
         self._thread: Optional[Thread] = None
+        self._sender = _SendQueue()
         # actual rate measurement
         self._count = 0
         self._t_rate = perf_counter()
@@ -155,6 +197,7 @@ class SetpointLoop:
             self.set_rate(rate_hz)
         if self._thread and self._thread.is_alive():
             return
+        self._sender.start()
         self._run_flag.set()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -162,6 +205,9 @@ class SetpointLoop:
 
     def stop(self):
         self._run_flag.clear()
+        if self._thread:
+            self._thread.join()
+        self._sender.stop()
 
     def is_running(self) -> bool:
         return self._run_flag.is_set()
@@ -195,10 +241,7 @@ class SetpointLoop:
                     r = p = y = 0.0; th = 0
                 if th <= 48000:
                     r = p = y = 0.0
-            try:
-                self.link.send_setpoint(r, p, y, th)
-            except Exception:
-                pass
+            self._sender.enqueue(self.link.send_setpoint, r, p, y, th)
             # --- actual rate accounting ---
             self._count += 1
             now = perf_counter()
@@ -229,6 +272,7 @@ class PWMSetpointLoop:
         self._rate_lock = Lock()
         self._run_flag = Event()
         self._thread: Optional[Thread] = None
+        self._sender = _SendQueue()
         self.last_pwm = [0, 0, 0, 0]
         self._mode = "manual"
         self._manual_pwm = [0, 0, 0, 0]
@@ -240,6 +284,7 @@ class PWMSetpointLoop:
             self.set_rate(rate_hz)
         if self._thread and self._thread.is_alive():
             return
+        self._sender.start()
         self._run_flag.set()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -247,6 +292,9 @@ class PWMSetpointLoop:
 
     def stop(self):
         self._run_flag.clear()
+        if self._thread:
+            self._thread.join()
+        self._sender.stop()
 
     def is_running(self) -> bool:
         return self._run_flag.is_set()
@@ -270,9 +318,19 @@ class PWMSetpointLoop:
     def attach_udp(self, receiver: PWMUDPReceiver):
         self._udp = receiver
 
+    def _dispatch_pwm(self, pwm: List[int]):
+        cf = getattr(self.link, "cf", None)
+        if cf is None:
+            return
+        motors = ("m1", "m2", "m3", "m4")
+        for i, m in enumerate(motors):
+            try:
+                cf.param.set_value(f"motorPowerSet.{m}", str(int(pwm[i])))
+            except Exception:
+                pass
+
     # --- worker ---
     def _run(self):
-        motors = ("m1", "m2", "m3", "m4")
         wait = Event()
         t_ns = perf_counter_ns()
         # ns-resolution timing with Event.wait loop (~2ms worst-case drift)
@@ -281,14 +339,8 @@ class PWMSetpointLoop:
                 pwm = self._udp.get_last()
             else:
                 pwm = list(self._manual_pwm)
-            cf = getattr(self.link, "cf", None)
-            if cf is not None:
-                for i, m in enumerate(motors):
-                    try:
-                        cf.param.set_value(f"motorPowerSet.{m}", str(int(pwm[i])))
-                    except Exception:
-                        pass
             self.last_pwm[:] = pwm[:4]
+            self._sender.enqueue(self._dispatch_pwm, pwm)
             with self._rate_lock:
                 dt_ns = int(1_000_000_000 / float(self._rate_hz))
             t_ns += dt_ns
