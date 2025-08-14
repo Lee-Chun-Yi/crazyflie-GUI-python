@@ -5,6 +5,7 @@ from threading import Thread, Event, Lock
 from typing import Optional, List
 
 from .models import SharedState
+from .utils import set_realtime_priority
 
 
 class UDPInput:
@@ -26,6 +27,7 @@ class UDPInput:
         self._running.set()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
+        set_realtime_priority(self._thread.ident)  # reduce jitter; may require admin rights
 
     def stop(self):
         self._running.clear()
@@ -153,6 +155,7 @@ class SetpointLoop:
         self._run_flag.set()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
+        set_realtime_priority(self._thread.ident)  # reduce jitter; may require admin rights
 
     def stop(self):
         self._run_flag.clear()
@@ -234,6 +237,7 @@ class PWMSetpointLoop:
         self._run_flag.set()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
+        set_realtime_priority(self._thread.ident)  # reduce jitter; may require admin rights
 
     def stop(self):
         self._run_flag.clear()
