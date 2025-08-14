@@ -3,6 +3,7 @@ import socket, struct
 from time import perf_counter, sleep
 from threading import Thread, Event, Lock
 from typing import Optional, List
+from queue import Queue, Empty
 
 from .models import SharedState
 
@@ -139,6 +140,10 @@ class SetpointLoop:
         self._rate_lock = Lock()
         self._run_flag = Event()
         self._thread: Optional[Thread] = None
+        # queue based sending
+        self._send_queue: Queue = Queue()
+        self._sender_flag = Event()
+        self._sender_thread: Optional[Thread] = None
         # actual rate measurement
         self._count = 0
         self._t_rate = perf_counter()
@@ -151,11 +156,22 @@ class SetpointLoop:
         if self._thread and self._thread.is_alive():
             return
         self._run_flag.set()
+        if not self._sender_thread or not self._sender_thread.is_alive():
+            self._sender_flag.set()
+            self._sender_thread = Thread(target=self._sender_worker, daemon=True)
+            self._sender_thread.start()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self):
         self._run_flag.clear()
+        self._sender_flag.clear()
+        # flush any remaining setpoints
+        self._send_queue.join()
+        if self._sender_thread and self._sender_thread.is_alive():
+            self._sender_thread.join()
+        if self._thread and self._thread.is_alive():
+            self._thread.join()
 
     def is_running(self) -> bool:
         return self._run_flag.is_set()
@@ -187,10 +203,7 @@ class SetpointLoop:
                     r = p = y = 0.0; th = 0
                 if th <= 48000:
                     r = p = y = 0.0
-            try:
-                self.link.send_setpoint(r, p, y, th)
-            except Exception:
-                pass
+            self._send_queue.put((r, p, y, th))
             # --- actual rate accounting ---
             self._count += 1
             now = perf_counter()
@@ -210,6 +223,19 @@ class SetpointLoop:
             else:
                 t = perf_counter()
 
+    def _sender_worker(self):
+        while self._sender_flag.is_set() or not self._send_queue.empty():
+            try:
+                r, p, y, th = self._send_queue.get(timeout=0.1)
+            except Empty:
+                continue
+            try:
+                self.link.send_setpoint(r, p, y, th)
+            except Exception:
+                pass
+            finally:
+                self._send_queue.task_done()
+
 
 class PWMSetpointLoop:
     """Send PWM values to Crazyflie using either manual or UDP input."""
@@ -220,6 +246,9 @@ class PWMSetpointLoop:
         self._rate_lock = Lock()
         self._run_flag = Event()
         self._thread: Optional[Thread] = None
+        self._send_queue: Queue = Queue()
+        self._sender_flag = Event()
+        self._sender_thread: Optional[Thread] = None
         self.last_pwm = [0, 0, 0, 0]
         self._mode = "manual"
         self._manual_pwm = [0, 0, 0, 0]
@@ -232,11 +261,21 @@ class PWMSetpointLoop:
         if self._thread and self._thread.is_alive():
             return
         self._run_flag.set()
+        if not self._sender_thread or not self._sender_thread.is_alive():
+            self._sender_flag.set()
+            self._sender_thread = Thread(target=self._sender_worker, daemon=True)
+            self._sender_thread.start()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self):
         self._run_flag.clear()
+        self._sender_flag.clear()
+        self._send_queue.join()
+        if self._sender_thread and self._sender_thread.is_alive():
+            self._sender_thread.join()
+        if self._thread and self._thread.is_alive():
+            self._thread.join()
 
     def is_running(self) -> bool:
         return self._run_flag.is_set()
@@ -269,13 +308,7 @@ class PWMSetpointLoop:
                 pwm = self._udp.get_last()
             else:
                 pwm = list(self._manual_pwm)
-            cf = getattr(self.link, "cf", None)
-            if cf is not None:
-                for i, m in enumerate(motors):
-                    try:
-                        cf.param.set_value(f"motorPowerSet.{m}", str(int(pwm[i])))
-                    except Exception:
-                        pass
+            self._send_queue.put(pwm)
             self.last_pwm[:] = pwm[:4]
             with self._rate_lock:
                 dt = 1.0 / float(self._rate_hz)
@@ -285,3 +318,19 @@ class PWMSetpointLoop:
                 sleep(d)
             else:
                 t = perf_counter()
+
+    def _sender_worker(self):
+        motors = ("m1", "m2", "m3", "m4")
+        while self._sender_flag.is_set() or not self._send_queue.empty():
+            try:
+                pwm = self._send_queue.get(timeout=0.1)
+            except Empty:
+                continue
+            cf = getattr(self.link, "cf", None)
+            if cf is not None:
+                for i, m in enumerate(motors):
+                    try:
+                        cf.param.set_value(f"motorPowerSet.{m}", str(int(pwm[i])))
+                    except Exception:
+                        pass
+            self._send_queue.task_done()
