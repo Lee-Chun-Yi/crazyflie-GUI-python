@@ -313,7 +313,7 @@ class App(tk.Tk):
 
         # Safety（共用）
         safe = ttk.Labelframe(parent, text="Safety", padding=8); safe.pack(fill=tk.X, pady=(8,0))
-        ttk.Button(safe, text="Emergency stop (RPYT=0,0,0,0)", command=self.emergency_stop).pack(side=tk.LEFT)
+        ttk.Button(safe, text="Emergency stop", command=self.emergency_stop).pack(side=tk.LEFT)
         ttk.Button(safe, text="Land (ramp down)", command=self.land).pack(side=tk.LEFT, padx=8)
 
     def _apply_axes_bounds(self):
