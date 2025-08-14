@@ -1,6 +1,6 @@
 from __future__ import annotations
 import socket, struct
-from time import perf_counter, sleep
+from time import perf_counter, perf_counter_ns
 from threading import Thread, Event, Lock
 from typing import Optional, List
 
@@ -43,7 +43,9 @@ class UDPInput:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("127.0.0.1", self.port))
         sock.setblocking(False)
-        t = perf_counter()
+        wait = Event()
+        t_ns = perf_counter_ns()
+        # use ns resolution and manual wait loop to reduce jitter (~2ms worst case)
         while self._running.is_set() and not self.state.stop_all.is_set():
             try:
                 while True:
@@ -65,13 +67,14 @@ class UDPInput:
                 pass
             # timing
             with self._rate_lock:
-                dt = 1.0 / float(self._rate_hz)
-            t += dt
-            d = t - perf_counter()
-            if d > 0:
-                sleep(d)
-            else:
-                t = perf_counter()
+                dt_ns = int(1_000_000_000 / float(self._rate_hz))
+            t_ns += dt_ns
+            while True:
+                remaining = t_ns - perf_counter_ns()
+                if remaining <= 0:
+                    t_ns = perf_counter_ns()
+                    break
+                wait.wait(remaining / 1e9)
 
 
 class PWMUDPReceiver:
@@ -174,7 +177,9 @@ class SetpointLoop:
 
     # --- worker ---
     def _run(self):
-        t = perf_counter()
+        wait = Event()
+        t_ns = perf_counter_ns()
+        # perf_counter_ns + Event.wait loop keeps jitter low (<~2ms)
         while self._run_flag.is_set() and not self.state.stop_all.is_set():
             # fetch once per tick
             with self.state.lock:
@@ -202,13 +207,14 @@ class SetpointLoop:
 
             # timing
             with self._rate_lock:
-                dt = 1.0 / float(self._rate_hz)
-            t += dt
-            d = t - perf_counter()
-            if d > 0:
-                sleep(d)
-            else:
-                t = perf_counter()
+                dt_ns = int(1_000_000_000 / float(self._rate_hz))
+            t_ns += dt_ns
+            while True:
+                remaining = t_ns - perf_counter_ns()
+                if remaining <= 0:
+                    t_ns = perf_counter_ns()
+                    break
+                wait.wait(remaining / 1e9)
 
 
 class PWMSetpointLoop:
@@ -263,7 +269,9 @@ class PWMSetpointLoop:
     # --- worker ---
     def _run(self):
         motors = ("m1", "m2", "m3", "m4")
-        t = perf_counter()
+        wait = Event()
+        t_ns = perf_counter_ns()
+        # ns-resolution timing with Event.wait loop (~2ms worst-case drift)
         while self._run_flag.is_set():
             if self._mode == "udp" and self._udp:
                 pwm = self._udp.get_last()
@@ -278,10 +286,11 @@ class PWMSetpointLoop:
                         pass
             self.last_pwm[:] = pwm[:4]
             with self._rate_lock:
-                dt = 1.0 / float(self._rate_hz)
-            t += dt
-            d = t - perf_counter()
-            if d > 0:
-                sleep(d)
-            else:
-                t = perf_counter()
+                dt_ns = int(1_000_000_000 / float(self._rate_hz))
+            t_ns += dt_ns
+            while True:
+                remaining = t_ns - perf_counter_ns()
+                if remaining <= 0:
+                    t_ns = perf_counter_ns()
+                    break
+                wait.wait(remaining / 1e9)
