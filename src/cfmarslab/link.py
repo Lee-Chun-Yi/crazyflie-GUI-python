@@ -12,7 +12,15 @@ from cflib.utils.power_switch import PowerSwitch
 from .models import SharedState
 from .config import Controls
 
-cflib.crtp.init_drivers()
+_drivers_initialized = False
+
+
+def init_drivers_once() -> None:
+    """Initialize CRTP drivers a single time."""
+    global _drivers_initialized
+    if not _drivers_initialized:
+        cflib.crtp.init_drivers(enable_debug_driver=False)
+        _drivers_initialized = True
 
 class LinkManager:
     """Manage Crazyflie link + minimal telemetry (VBAT, optional RSSI/latency)."""
@@ -29,6 +37,7 @@ class LinkManager:
         self._arm_param: str | None = None
 
     def connect(self):
+        init_drivers_once()
         # establish link
         self.scf = SyncCrazyflie(self.uri, cf=Crazyflie(rw_cache="./cache"))
         self.scf.__enter__()  # manual context enter to keep handle
