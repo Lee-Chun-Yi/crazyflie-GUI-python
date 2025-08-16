@@ -8,7 +8,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from .models import SharedState
 from .config import load_config, save_config
-from .link import LinkManager
+from .link import LinkManager, init_drivers_once
 from .control import UDPInput, SetpointLoop, PWMSetpointLoop, PWMUDPReceiver
 from .vicon import ViconUDP51001
 import cflib.crtp
@@ -960,7 +960,7 @@ class App(tk.Tk):
         """Keep console messages as requested."""
         try:
             self.log("Scanning for Crazyradio/Crazyflie...")
-            cflib.crtp.init_drivers(enable_debug_driver=False)
+            init_drivers_once()
             found = cflib.crtp.scan_interfaces()
             uris = [u for (u, _d) in (found or [])]
             self.log(f"Scan complete: found {len(uris)} device(s)")
