@@ -269,9 +269,13 @@ class App(tk.Tk):
         ttk.Label(optrow, text="Decimate").pack(side=tk.LEFT, padx=(12,4))
         ttk.Combobox(optrow, width=4, state="readonly", values=["1","2","5","10"], textvariable=self.decimate_var).pack(side=tk.LEFT)
 
-        # Arm 按鈕（放在 Controls 區塊、Flight Control 上方）
-        self.btn_arm = ttk.Button(parent, text="Arm", command=self._arm_cf, state=tk.DISABLED)
-        self.btn_arm.pack(anchor=tk.W, pady=(8,0))
+        # Arm toggle and state label
+        armrow = ttk.Frame(parent)
+        self.btn_arm = ttk.Button(armrow, text="Arm", command=self._on_arm_toggle, state=tk.DISABLED)
+        self.btn_arm.pack(side=tk.LEFT)
+        self.lbl_arm_state = ttk.Label(armrow, text="—", foreground="gray")
+        self.lbl_arm_state.pack(side=tk.LEFT, padx=(6,0))
+        armrow.pack(anchor=tk.W, pady=(8,0))
 
         # 控制模式分頁（2-PID / 4-PID）
         self.ctrl_nb = ttk.Notebook(parent)
@@ -503,8 +507,14 @@ class App(tk.Tk):
         try:
             self.link = LinkManager(self.state_model, uri); self.link.connect()
             self.cf = self.link.cf
+            self.link.detect_platform_and_arm_param()
+            plat = "Bolt" if self.link.is_bolt else "Unknown"
+            self.log(f"Platform: {plat}; arming param: {self.link.arm_param or 'not found'}")
+            if not self.link.arm_param:
+                self.log("[ARM] no arming param")
             self.btn_conn.configure(state=tk.DISABLED); self.btn_disc.configure(state=tk.NORMAL)
-            self.btn_arm.configure(state=tk.NORMAL)
+            self.btn_arm.configure(state=tk.DISABLED)
+            self.lbl_arm_state.configure(text="—")
             uris = [u for u in [uri] + self.cfg.recent_uris if u and u != uri]
             self.cfg.recent_uris = [uri] + uris[:7]; save_config(self.cfg)
             self.mru_combo.configure(values=self.cfg.recent_uris)
@@ -524,6 +534,7 @@ class App(tk.Tk):
             self.cf = None
             self.btn_conn.configure(state=tk.NORMAL); self.btn_disc.configure(state=tk.DISABLED)
             self.btn_arm.configure(state=tk.DISABLED)
+            self.lbl_arm_state.configure(text="—")
             if hasattr(self, "lbl_status"):
                 self.lbl_status.configure(text=" | Disconnected")
             self.log("Disconnected")
@@ -636,13 +647,29 @@ class App(tk.Tk):
             if self.setpoints and self.setpoints.is_running():
                 self._sp_stop()
 
-    def _arm_cf(self):
+    def _on_arm_toggle(self):
+        if not (self.link and self.link.arm_param):
+            self.log("[ARM] no arming param")
+            return
+        name = self.link.arm_param
         try:
-            if self.cf:
-                self.cf.platform.send_arming_request(True)
-                self.log("Arming request sent")
+            cur = self.link.get_bool_param(name, False)
+            target = not cur
+            ok = self.link.set_bool_param(name, target)
+            armed = self.link.get_bool_param(name, False)
+            if ok:
+                self.log(f"[ARM] -> {'arm' if armed else 'disarm'}")
+            else:
+                self.log("[ARM] write failed")
+            # update UI immediately
+            if armed:
+                self.btn_arm.config(text="Arm")
+                self.lbl_arm_state.config(text="arm")
+            else:
+                self.btn_arm.config(text="Disarm")
+                self.lbl_arm_state.config(text="disarm")
         except Exception as e:
-            self.log(f"Arming request failed: {e}")
+            self.log(f"[ARM] error: {e}")
 
     # ---- Safety ----
     def emergency_stop(self):
@@ -790,6 +817,19 @@ class App(tk.Tk):
         self.title(f"Crazyflie GUI — VBAT: {v:.2f} V"); self.lbl_vbat.configure(text=f"VBAT: {v:.2f} V")
         self.lbl_rssi.configure(text=f"RSSI: {rssi:.0f} dBm" if rssi==rssi else "RSSI: --")
         self.lbl_latency.configure(text=f"Latency: {lat:.1f} ms" if lat==lat else "Latency: -- ms")
+
+        # arm/disarm toggle state
+        try:
+            if self.link and self.link.arm_param:
+                armed = self.link.get_bool_param(self.link.arm_param, False)
+                self.btn_arm.config(state=tk.NORMAL, text="Arm" if armed else "Disarm")
+                self.lbl_arm_state.config(text="arm" if armed else "disarm")
+            else:
+                self.btn_arm.config(state=tk.DISABLED, text="Arm")
+                self.lbl_arm_state.config(text="—")
+        except Exception:
+            self.btn_arm.config(state=tk.DISABLED, text="Arm")
+            self.lbl_arm_state.config(text="—")
 
         # control timing KPIs
         try:
