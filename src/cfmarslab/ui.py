@@ -8,10 +8,13 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from .models import SharedState
 from .config import load_config, save_config
-from .link import LinkManager, init_drivers_once
+from .link import init_drivers_once
 from .control import UDPInput, SetpointLoop, PWMSetpointLoop, PWMUDPReceiver
 from .vicon import ViconUDP51001
-import cflib.crtp
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .link import LinkManager
 
 UDP_COORD_PORT = 51002
 RADIO_BITRATES = ("2M", "1M", "250K")
@@ -27,7 +30,7 @@ class App(tk.Tk):
 
         self.state_model = SharedState()
         self.cfg = load_config()
-        self.link: LinkManager|None = None
+        self.link: "LinkManager|None" = None
         self.cf = None
 
         self._coords_running = False
@@ -505,6 +508,7 @@ class App(tk.Tk):
             self.log("No URI"); return
         self.log("Connecting...")
         try:
+            from .link import LinkManager
             self.link = LinkManager(self.state_model, uri); self.link.connect()
             self.cf = self.link.cf
             self.link.detect_platform_and_arm_param()
@@ -960,6 +964,7 @@ class App(tk.Tk):
         """Keep console messages as requested."""
         try:
             self.log("Scanning for Crazyradio/Crazyflie...")
+            import cflib.crtp
             init_drivers_once()
             found = cflib.crtp.scan_interfaces()
             uris = [u for (u, _d) in (found or [])]
