@@ -1,7 +1,7 @@
 # src/cfmarslab/link.py
 from __future__ import annotations
 import time
-from typing import Optional
+from typing import Optional, Iterable
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -10,6 +10,7 @@ from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.utils.power_switch import PowerSwitch
 
 from .models import SharedState
+from .config import Controls
 
 cflib.crtp.init_drivers()
 
@@ -22,6 +23,10 @@ class LinkManager:
         self.cf: Optional[Crazyflie] = None
         self._lg: Optional[LogConfig] = None
         self._last_cb: Optional[float] = None
+        # platform/arming detection
+        self.is_bolt: bool = False
+        self._param_toc: set[str] | None = None
+        self._arm_param: str | None = None
 
     def connect(self):
         # establish link
@@ -42,6 +47,83 @@ class LinkManager:
         lg.data_received_cb.add_callback(self._on_log)
         lg.start()
         self._lg = lg
+
+    # --- parameter helpers ---
+    @property
+    def arm_param(self) -> str | None:
+        return self._arm_param
+
+    def _build_param_toc(self) -> set[str]:
+        toc: set[str] = set()
+        if self.cf is None:
+            return toc
+        try:
+            for grp, params in getattr(self.cf.param.toc, "toc", {}).items():
+                for name in params:
+                    toc.add(f"{grp}.{name}")
+        except Exception:
+            pass
+        self._param_toc = toc
+        return toc
+
+    def find_param(self, names: Iterable[str]) -> str | None:
+        toc = self._param_toc or self._build_param_toc()
+        for name in names:
+            if name in toc:
+                return name
+        return None
+
+    def get_bool_param(self, name: str, default: bool = False) -> bool:
+        if self.cf is None:
+            return default
+        for _ in range(3):
+            try:
+                val = self.cf.param.get_value(name)
+                s = str(val).strip().lower()
+                if s in ("1", "true", "t", "yes", "on"):
+                    return True
+                if s in ("0", "false", "f", "no", "off"):
+                    return False
+                return bool(int(s))
+            except Exception:
+                time.sleep(0.05)
+        return default
+
+    def set_bool_param(self, name: str, value: bool) -> bool:
+        if self.cf is None:
+            return False
+        target = "1" if value else "0"
+        for _ in range(3):
+            try:
+                self.cf.param.set_value(name, target)
+                time.sleep(0.05)
+                if self.get_bool_param(name, not value) == value:
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.05)
+        return False
+
+    def detect_platform_and_arm_param(self) -> None:
+        cfg = Controls()
+        toc = self._build_param_toc()
+        # platform detection
+        self.is_bolt = False
+        if cfg.PLATFORM_HINT == "bolt":
+            self.is_bolt = True
+        elif "system.isBolt" in toc:
+            self.is_bolt = self.get_bool_param("system.isBolt", False)
+        elif "system.board" in toc:
+            try:
+                val = self.cf.param.get_value("system.board")
+                self.is_bolt = str(val).strip().lower() == "bolt"
+            except Exception:
+                pass
+        elif any(k.startswith("bolt.") for k in toc):
+            self.is_bolt = True
+
+        # arming parameter selection
+        self._arm_param = self.find_param(cfg.ARM_PARAM_CANDIDATES)
 
     def _on_log(self, ts, data, logconf):
         # update shared state

@@ -17,6 +17,15 @@ class Safety:
     VBAT_BLOCK: float = 3.7    # 低於此電壓禁止起飛
     VBAT_AUTO_LAND: float = 3.5
 
+@dataclass(frozen=True)
+class Controls:
+    ARM_PARAM_CANDIDATES: tuple[str, ...] = (
+        "stabilizer.armed",
+        "ctrlCmd.armed",
+        "motorPowerSet.enable",
+    )
+    PLATFORM_HINT: str | None = None  # "bolt" / None
+
 @dataclass
 class AppConfig:
     recent_uris: list[str]
