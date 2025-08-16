@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import socket, struct, threading, time, queue, logging, sys, traceback
 import tkinter as tk
 from tkinter import ttk, scrolledtext
@@ -29,7 +31,7 @@ class App(tk.Tk):
 
         self.state_model = SharedState()
         self.cfg = load_config()
-        self.link: "LinkManager | None" = None
+        self.link: LinkManager | None = None
         self.cf = None
 
         self._coords_running = False
