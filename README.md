@@ -94,3 +94,8 @@ This is project is also suit to anyone who is bridging  **MATLAB**  and **Crazyf
 * Refactored original single `.py` into **multiple modular files** for easier upgrades and maintenance
 * Improved GUI layout for better usability
   ![](https://github.com/Lee-Chun-Yi/crazyflie-GUI-python/blob/main/image/%E8%9E%A2%E5%B9%95%E6%93%B7%E5%8F%96%E7%95%AB%E9%9D%A2%202025-08-11%20010041.png)
+
+
+### **2025-08-16 — Control loop revised, based on C **
+
+With the control frequency demands increased, it is better for us to use C as the control loop, in order to ensre the stability in flight control.
