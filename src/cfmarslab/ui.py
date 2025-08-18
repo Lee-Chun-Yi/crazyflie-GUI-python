@@ -28,6 +28,50 @@ def decode_vicon_data_matlab(payload: bytes):
 UDP_COORD_PORT = 51002
 RADIO_BITRATES = ("2M", "1M", "250K")
 
+vicon_data: tuple[float, float, float, float, float, float] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+vicon_thread: threading.Thread | None = None
+vicon_running = threading.Event()
+lock = threading.Lock()
+
+
+def listen_port_8889(rate_hz: int = 30) -> None:
+    global vicon_data
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 8889))
+    sock.setblocking(False)
+
+    period = 1.0 / max(1, rate_hz)
+    vicon_running.set()
+    while vicon_running.is_set():
+        try:
+            data, _ = sock.recvfrom(1024)
+            if len(data) == 24:
+                vals = struct.unpack("<6f", data)
+                with lock:
+                    vicon_data = vals
+        except BlockingIOError:
+            pass
+        except OSError:
+            break
+        time.sleep(period)
+    sock.close()
+
+
+def start_vicon_listener(rate_hz: int = 30) -> None:
+    global vicon_thread
+    if vicon_thread and vicon_thread.is_alive():
+        return
+    vicon_thread = threading.Thread(
+        target=listen_port_8889, args=(rate_hz,), daemon=True
+    )
+    vicon_thread.start()
+
+
+def stop_vicon_listener() -> None:
+    vicon_running.clear()
+    if vicon_thread:
+        vicon_thread.join(timeout=1.0)
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
