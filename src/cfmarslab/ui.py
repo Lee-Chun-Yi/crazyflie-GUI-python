@@ -211,6 +211,7 @@ class App(tk.Tk):
         self.vrx_var = tk.StringVar(value="--")
         self.vry_var = tk.StringVar(value="--")
         self.vrz_var = tk.StringVar(value="--")
+        self.vrx_rate_var = tk.StringVar(value="20")
         self._vrx_running = False
         self._vrx_thread: threading.Thread | None = None
         self._vrx_sock: socket.socket | None = None
@@ -306,6 +307,18 @@ class App(tk.Tk):
         ttk.Label(row_top, text="X").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vx_var, state="readonly").pack(side=tk.LEFT, padx=(0,8))
         ttk.Label(row_top, text="Y").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vy_var, state="readonly").pack(side=tk.LEFT, padx=(0,8))
         ttk.Label(row_top, text="Z").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vz_var, state="readonly").pack(side=tk.LEFT, padx=(0,12))
+        ttk.Label(row_top, text="Rate (Hz)").pack(side=tk.LEFT, padx=(0,4))
+        vcmd = (self.register(lambda P: P.isdigit() or P == ""), "%P")
+        self.vrx_rate_entry = ttk.Spinbox(
+            row_top,
+            from_=1,
+            to=500,
+            width=6,
+            textvariable=self.vrx_rate_var,
+            validate="key",
+            validatecommand=vcmd,
+        )
+        self.vrx_rate_entry.pack(side=tk.LEFT, padx=(0,12))
         self.btn_vrx_start = ttk.Button(row_top, text="Start", command=self._vrx_start)
         self.btn_vrx_stop  = ttk.Button(row_top, text="Stop",  command=self._vrx_stop, state=tk.DISABLED)
         self.btn_vrx_start.pack(side=tk.LEFT); self.btn_vrx_stop.pack(side=tk.LEFT, padx=(6,0))
@@ -495,21 +508,32 @@ class App(tk.Tk):
         if "Vicon" in tab_text or "3D" in tab_text:
             self._ensure_3d_canvas()
 
+    def _safe_rate_hz(self, default=30):
+        try:
+            v = self.vrx_rate_var.get()
+            return max(1, int(float(v)))
+        except Exception:
+            return default
+
     def _vrx_start(self):
         sock = None
         try:
             self._ensure_3d_canvas()
             if self._vrx_running:
                 return
+            hz = self._safe_rate_hz(30)
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.bind(("127.0.0.1", 8889))
-            sock.settimeout(0.2)
+            sock.setblocking(False)
             self._vrx_sock = sock
             self._vrx_running = True
-            self._vrx_thread = threading.Thread(target=self._vrx_loop, daemon=True)
+            self._vrx_thread = threading.Thread(
+                target=self._vrx_loop, args=(hz,), daemon=True
+            )
             self._vrx_thread.start()
             self.btn_vrx_start.configure(state=tk.DISABLED)
             self.btn_vrx_stop.configure(state=tk.NORMAL)
+            self.vrx_rate_entry.configure(state=tk.DISABLED)
             self.log("Vicon UDP receive started")
         except Exception as e:
             try:
@@ -518,15 +542,21 @@ class App(tk.Tk):
             except Exception:
                 pass
             self._vrx_running = False
+            self.vrx_rate_entry.configure(state=tk.NORMAL)
             self.log(f"Vicon receive start failed: {e}")
 
     def _vrx_stop(self):
         try:
+            if not self._vrx_running:
+                return
             self._vrx_running = False
             sock = self._vrx_sock
             if sock:
                 try:
                     sock.close()
+                except OSError as e:
+                    if getattr(e, "winerror", None) != 10038:
+                        raise
                 except Exception:
                     pass
             self._vrx_sock = None
@@ -536,12 +566,14 @@ class App(tk.Tk):
             self._vrx_thread = None
             self.btn_vrx_start.configure(state=tk.NORMAL)
             self.btn_vrx_stop.configure(state=tk.DISABLED)
+            self.vrx_rate_entry.configure(state=tk.NORMAL)
             self.log("Vicon UDP receive stopped")
         except Exception as e:
             self.log(f"Vicon receive stop failed: {e}")
 
-    def _vrx_loop(self):
+    def _vrx_loop(self, hz: int):
         sock = self._vrx_sock
+        period = 1.0 / max(1, hz)
         last_err = 0.0
         while self._vrx_running and sock:
             try:
@@ -550,14 +582,14 @@ class App(tk.Tk):
                 with self._vrx_lock:
                     self._last_vicon = (x, y, z, rx, ry, rz)
                     self.trail_buf.append((time.time(), x, y, z))
-            except (socket.timeout, BlockingIOError):
-                continue
+            except BlockingIOError:
+                pass
             except Exception as e:
                 now = time.time()
                 if now - last_err >= 1.0:
                     self.enqueue_log(f"[Vicon] decode error: {e}")
                     last_err = now
-                continue
+            time.sleep(period)
 
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
