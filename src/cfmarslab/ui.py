@@ -3,12 +3,9 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext
 from collections import deque
 import math
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from .models import SharedState
 from .config import load_config, save_config
-from .link import init_drivers_once
 from .control import UDPInput, SetpointLoop, PWMSetpointLoop, PWMUDPReceiver
 from .vicon import ViconUDP51001
 from typing import TYPE_CHECKING
@@ -139,7 +136,8 @@ class App(tk.Tk):
         self._quiver_artist = None
         self._trail_artist  = None
         self._point_artist  = None
-        self._last_plot_ts  = 0.0
+        self._last_canvas_draw = 0.0
+        self._last_kpi_update = 0.0
         self.vrx_hz_var = tk.IntVar(value=30)
         self.vx_var = tk.StringVar(value="--")
         self.vy_var = tk.StringVar(value="--")
@@ -155,32 +153,31 @@ class App(tk.Tk):
         # Right: 3D plot on top, console bottom
         right_panel = ttk.Frame(split, padding=6)
 
-        plot_container = ttk.Frame(right_panel)
-        plot_container.pack(fill=tk.BOTH, expand=True)
+        self.plot_container = ttk.Frame(right_panel)
+        self.plot_container.pack(fill=tk.BOTH, expand=True)
 
-        self.fig = Figure(figsize=(6,4), dpi=100)
-        self.ax3d = self.fig.add_subplot(111, projection="3d")
-        self.fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.98)
-        self.ax3d.set_xlabel("X"); self.ax3d.set_ylabel("Y"); self.ax3d.set_zlabel("Z")
+        self.fig = None
+        self.ax3d = None
+        self.canvas = None
 
         self.azim_var = tk.DoubleVar(value=-60.0)
         self.elev_var = tk.DoubleVar(value=20.0)
 
-        self.canvas3d = FigureCanvasTkAgg(self.fig, master=plot_container)
-        self.canvas3d.get_tk_widget().grid(row=0, column=0, sticky="nsew")
-
-        self.elev_scale = ttk.Scale(plot_container, from_=90.0, to=-90.0,
+        self.elev_scale = ttk.Scale(self.plot_container, from_=90.0, to=-90.0,
                                     variable=self.elev_var, orient=tk.VERTICAL,
                                     command=self._update_view)
         self.elev_scale.grid(row=0, column=1, sticky="ns")
 
-        self.azim_scale = ttk.Scale(plot_container, from_=-180.0, to=180.0,
+        self.azim_scale = ttk.Scale(self.plot_container, from_=-180.0, to=180.0,
                                     variable=self.azim_var, orient=tk.HORIZONTAL,
                                     command=self._update_view)
         self.azim_scale.grid(row=1, column=0, sticky="ew")
 
-        plot_container.grid_rowconfigure(0, weight=1)
-        plot_container.grid_columnconfigure(0, weight=1)
+        self._canvas_placeholder = ttk.Frame(self.plot_container)
+        self._canvas_placeholder.grid(row=0, column=0, sticky="nsew")
+
+        self.plot_container.grid_rowconfigure(0, weight=1)
+        self.plot_container.grid_columnconfigure(0, weight=1)
 
         right_console = ttk.Labelframe(right_panel, text="Console", padding=6)
         self.console = scrolledtext.ScrolledText(right_console, height=8, state="disabled")
@@ -188,9 +185,6 @@ class App(tk.Tk):
         right_console.pack(fill=tk.BOTH, expand=False, pady=(6,0))
 
         split.add(right_panel, weight=3)
-
-        self._apply_axes_bounds()
-        self._update_view()
 
         # timers
         self.after(250, self._ui_tick)
@@ -264,7 +258,7 @@ class App(tk.Tk):
         self.bz0 = tk.StringVar(value="0"); self.bz1 = tk.StringVar(value="1500")
         ttk.Entry(brow, width=8, textvariable=self.bz0).grid(row=0, column=7)
         ttk.Entry(brow, width=8, textvariable=self.bz1).grid(row=0, column=8)
-        ttk.Button(brow, text="Apply", command=lambda: (self._apply_axes_bounds(), self.canvas3d.draw_idle())).grid(row=0, column=9, padx=(12,0))
+        ttk.Button(brow, text="Apply", command=self._on_apply_bounds).grid(row=0, column=9, padx=(12,0))
 
         optrow = ttk.Frame(vgp); optrow.pack(fill=tk.X, pady=(4,0))
         ttk.Label(optrow, text="Show trail (s)").pack(side=tk.LEFT, padx=(0,4))
@@ -337,6 +331,8 @@ class App(tk.Tk):
         ttk.Button(safe, text="Land (ramp down)", command=self.land).pack(side=tk.LEFT, padx=8)
 
     def _apply_axes_bounds(self):
+        if not self.ax3d:
+            return
         try:
             bx0 = float(self.bx0.get()); bx1 = float(self.bx1.get())
             by0 = float(self.by0.get()); by1 = float(self.by1.get())
@@ -350,24 +346,30 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _on_apply_bounds(self):
+        self._apply_axes_bounds()
+        if self.canvas:
+            self.canvas.draw_idle()
+
     def _update_view(self, *_):
+        if not self.ax3d:
+            return
         az = float(self.azim_var.get())
         el = float(self.elev_var.get())
         self.ax3d.view_init(elev=el, azim=az)
-        self.canvas3d.draw_idle()
+        if self.canvas:
+            self.canvas.draw_idle()
 
     def _draw_quiver(self, x, y, z, roll, pitch, yaw):
-        # Remove previous
+        if not self.ax3d:
+            return
         if self._quiver_artist is not None:
             try: self._quiver_artist.remove()
             except Exception: pass
             self._quiver_artist = None
-        # Compute direction from RPY (Z-Y-X; yaw,pitch,roll)
-        # Body x-axis projected to world:
         cx, sx = math.cos(roll),  math.sin(roll)
         cy, sy = math.cos(pitch), math.sin(pitch)
         cz, sz = math.cos(yaw),   math.sin(yaw)
-        # R = Rz(yaw) * Ry(pitch) * Rx(roll)
         dx =  cy*cz
         dy =  cy*sz
         dz = -sy
@@ -391,11 +393,32 @@ class App(tk.Tk):
             try: self._quiver_artist.remove()
             except Exception: pass
             self._quiver_artist = None
-        if hasattr(self, "canvas3d"):
-            self.canvas3d.draw_idle()
+        if self.canvas:
+            self.canvas.draw_idle()
+
+    def _ensure_3d_canvas(self):
+        if self.canvas:
+            return
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        self.fig = Figure(figsize=(6, 4), dpi=100)
+        self.ax3d = self.fig.add_subplot(111, projection="3d")
+        self.fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.98)
+        self.ax3d.set_xlabel("X"); self.ax3d.set_ylabel("Y"); self.ax3d.set_zlabel("Z")
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_container)
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+        if getattr(self, "_canvas_placeholder", None) is not None:
+            try:
+                self._canvas_placeholder.destroy()
+            except Exception:
+                pass
+            self._canvas_placeholder = None
+        self._apply_axes_bounds()
+        self._update_view()
 
     def _vrx_start(self):
         try:
+            self._ensure_3d_canvas()
             if not self.vicon:
                 self.vicon = ViconUDP51001(port=51001, logger=self.enqueue_log)
             self.vicon.start()
@@ -835,51 +858,42 @@ class App(tk.Tk):
             self.btn_arm.config(state=tk.DISABLED, text="Arm")
             self.lbl_arm_state.config(text="—")
 
-        # control timing KPIs
-        try:
-            loop = None
-            if self.setpoints and self.setpoints.is_running():
-                loop = self.setpoints
-            elif self.pwm_loop and self.pwm_loop.is_running():
-                loop = self.pwm_loop
-            if loop:
-                jbuf, miss, total = loop.get_timing_snapshot()
-                j_ms = [v * 1000.0 for v in jbuf]
-                n = len(j_ms)
-                if n >= 5:
-                    vals = sorted(j_ms)
-                    p95 = vals[int(0.95 * (n - 1))]
-                    p99 = vals[int(0.99 * (n - 1))]
+        # control timing KPIs and actual rates (update <=1Hz)
+        now = time.time()
+        if now - getattr(self, "_last_kpi_update", 0.0) >= 1.0:
+            try:
+                loop = None
+                if self.setpoints and self.setpoints.is_running():
+                    loop = self.setpoints
+                elif self.pwm_loop and self.pwm_loop.is_running():
+                    loop = self.pwm_loop
+                if loop:
+                    p95, p99, miss_pct = loop.get_cached_stats(now)
+                    self.lbl_ctrl_timing.configure(
+                        text=f"Timing: P95 {p95:.2f} ms  |  P99 {p99:.2f} ms  |  Miss {miss_pct:.2f} %")
                 else:
-                    p95 = float("nan")
-                    p99 = float("nan")
-                miss_pct = 100.0 * miss / total if total > 0 else float("nan")
-                self.lbl_ctrl_timing.configure(
-                    text=f"Timing: P95 {p95:.2f} ms  |  P99 {p99:.2f} ms  |  Miss {miss_pct:.2f} %")
-            else:
-                self.lbl_ctrl_timing.configure(text="Timing: P95 -- ms  |  P99 -- ms  |  Miss -- %")
-        except Exception:
-            pass
+                    self.lbl_ctrl_timing.configure(text="Timing: P95 -- ms  |  P99 -- ms  |  Miss -- %")
+            except Exception:
+                pass
 
-        # setpoint loop actual rate label (if available)
-        try:
-            if self.setpoints and self.setpoints.is_running():
-                ar = self.setpoints.get_actual_rate()
-                self.lbl_sp_actual.configure(text=f"Actual: {ar:.1f} Hz")
-            else:
-                self.lbl_sp_actual.configure(text="Actual: -- Hz")
-        except Exception:
-            pass
+            try:
+                if self.setpoints and self.setpoints.is_running():
+                    ar = self.setpoints.get_actual_rate()
+                    self.lbl_sp_actual.configure(text=f"Actual: {ar:.1f} Hz")
+                else:
+                    self.lbl_sp_actual.configure(text="Actual: -- Hz")
+            except Exception:
+                pass
 
-        # PWM loop actual rate label (if available)
-        try:
-            if self.pwm_loop and self.pwm_loop.is_running():
-                ar = self.pwm_loop.get_actual_rate()
-                self.lbl_pwm_actual.configure(text=f"Actual: {ar:.1f} Hz")
-            else:
-                self.lbl_pwm_actual.configure(text="Actual: -- Hz")
-        except Exception:
-            pass
+            try:
+                if self.pwm_loop and self.pwm_loop.is_running():
+                    ar = self.pwm_loop.get_actual_rate()
+                    self.lbl_pwm_actual.configure(text=f"Actual: {ar:.1f} Hz")
+                else:
+                    self.lbl_pwm_actual.configure(text="Actual: -- Hz")
+            except Exception:
+                pass
+            self._last_kpi_update = now
 
         # update PWM display fields
         try:
@@ -895,11 +909,12 @@ class App(tk.Tk):
         # 3D Vicon plot
         last = None
         try:
-            if hasattr(self, "vicon") and self.vicon:
+            if self.vicon:
                 last = self.vicon.get_last()
         except Exception:
             last = None
         if last:
+            self._ensure_3d_canvas()
             x, y, z, rx, ry, rz = last
             now = time.time()
             self.trail_buf.append((now, x, y, z))
@@ -930,9 +945,9 @@ class App(tk.Tk):
                 try: self._trail_artist.remove()
                 except Exception: pass
                 self._trail_artist = None
-            if now - self._last_plot_ts >= 0.1:
-                self.canvas3d.draw_idle()
-                self._last_plot_ts = now
+            if self.canvas and now - self._last_canvas_draw >= 0.1:
+                self.canvas.draw_idle()
+                self._last_canvas_draw = now
 
         self.after(250, self._ui_tick)
 
@@ -965,7 +980,10 @@ class App(tk.Tk):
         try:
             self.log("Scanning for Crazyradio/Crazyflie...")
             import cflib.crtp
-            init_drivers_once()
+            from . import link as _link
+            if not _link._cflib_inited:
+                cflib.crtp.init_drivers()
+                _link._cflib_inited = True
             found = cflib.crtp.scan_interfaces()
             uris = [u for (u, _d) in (found or [])]
             self.log(f"Scan complete: found {len(uris)} device(s)")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from typing import Optional, Iterable
 
-import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
@@ -12,15 +11,7 @@ from cflib.utils.power_switch import PowerSwitch
 from .models import SharedState
 from .config import Controls
 
-_drivers_initialized = False
-
-
-def init_drivers_once() -> None:
-    """Initialize CRTP drivers a single time."""
-    global _drivers_initialized
-    if not _drivers_initialized:
-        cflib.crtp.init_drivers(enable_debug_driver=False)
-        _drivers_initialized = True
+_cflib_inited = False
 
 class LinkManager:
     """Manage Crazyflie link + minimal telemetry (VBAT, optional RSSI/latency)."""
@@ -37,7 +28,12 @@ class LinkManager:
         self._arm_param: str | None = None
 
     def connect(self):
-        init_drivers_once()
+        global _cflib_inited
+        if not _cflib_inited:
+            import cflib.crtp
+            cflib.crtp.init_drivers()
+            _cflib_inited = True
+
         # establish link
         self.scf = SyncCrazyflie(self.uri, cf=Crazyflie(rw_cache="./cache"))
         self.scf.__enter__()  # manual context enter to keep handle

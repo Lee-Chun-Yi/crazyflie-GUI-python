@@ -188,11 +188,13 @@ class SetpointLoop:
         self._thread: Optional[Thread] = None
         self._sender = _SendQueue()
         # timing stats
-        self._jitter_buf = deque(maxlen=5000)
+        self._jitter_buf = deque(maxlen=300)
         self._miss_count = 0
         self._total_count = 0
         self._timing_lock = Lock()
         self._last_send_time: Optional[float] = None
+        self._stats_cache = (float("nan"), float("nan"), float("nan"))
+        self._stats_time = 0.0
         # actual rate measurement
         self._count = 0
         self._t_rate = perf_counter()
@@ -239,6 +241,23 @@ class SetpointLoop:
     def get_timing_snapshot(self):
         with self._timing_lock:
             return list(self._jitter_buf), int(self._miss_count), int(self._total_count)
+
+    def get_cached_stats(self, now: float):
+        with self._timing_lock:
+            if now - self._stats_time >= 1.0:
+                j_ms = [v * 1000.0 for v in self._jitter_buf]
+                n = len(j_ms)
+                if n >= 5:
+                    vals = sorted(j_ms)
+                    p95 = vals[int(0.95 * (n - 1))]
+                    p99 = vals[int(0.99 * (n - 1))]
+                else:
+                    p95 = float("nan")
+                    p99 = float("nan")
+                miss_pct = 100.0 * self._miss_count / self._total_count if self._total_count > 0 else float("nan")
+                self._stats_cache = (p95, p99, miss_pct)
+                self._stats_time = now
+            return self._stats_cache
 
     # --- worker ---
     def _run(self):
@@ -303,11 +322,13 @@ class PWMSetpointLoop:
         self._manual_pwm = [0, 0, 0, 0]
         self._udp: Optional[PWMUDPReceiver] = None
         # timing stats
-        self._jitter_buf = deque(maxlen=5000)
+        self._jitter_buf = deque(maxlen=300)
         self._miss_count = 0
         self._total_count = 0
         self._timing_lock = Lock()
         self._last_send_time: Optional[float] = None
+        self._stats_cache = (float("nan"), float("nan"), float("nan"))
+        self._stats_time = 0.0
         # actual rate measurement
         self._count = 0
         self._t_rate = perf_counter()
@@ -353,6 +374,23 @@ class PWMSetpointLoop:
     def get_timing_snapshot(self):
         with self._timing_lock:
             return list(self._jitter_buf), int(self._miss_count), int(self._total_count)
+
+    def get_cached_stats(self, now: float):
+        with self._timing_lock:
+            if now - self._stats_time >= 1.0:
+                j_ms = [v * 1000.0 for v in self._jitter_buf]
+                n = len(j_ms)
+                if n >= 5:
+                    vals = sorted(j_ms)
+                    p95 = vals[int(0.95 * (n - 1))]
+                    p99 = vals[int(0.99 * (n - 1))]
+                else:
+                    p95 = float("nan")
+                    p99 = float("nan")
+                miss_pct = 100.0 * self._miss_count / self._total_count if self._total_count > 0 else float("nan")
+                self._stats_cache = (p95, p99, miss_pct)
+                self._stats_time = now
+            return self._stats_cache
 
     def set_mode(self, mode: str):
         if mode not in ("manual", "udp"):
