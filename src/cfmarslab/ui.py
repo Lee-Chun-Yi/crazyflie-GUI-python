@@ -706,10 +706,10 @@ class App(tk.Tk):
                 self.log("[ARM] write failed")
             # update UI immediately
             if armed:
-                self.btn_arm.config(text="Arm")
+                self.btn_arm.config(text="Disarm")
                 self.lbl_arm_state.config(text="arm")
             else:
-                self.btn_arm.config(text="Disarm")
+                self.btn_arm.config(text="Arm")
                 self.lbl_arm_state.config(text="disarm")
         except Exception as e:
             self.log(f"[ARM] error: {e}")
@@ -870,7 +870,7 @@ class App(tk.Tk):
         try:
             if self.link and self.link.arm_param:
                 armed = self.link.get_bool_param(self.link.arm_param, False)
-                self.btn_arm.config(state=tk.NORMAL, text="Arm" if armed else "Disarm")
+                self.btn_arm.config(state=tk.NORMAL, text="Disarm" if armed else "Arm")
                 self.lbl_arm_state.config(text="arm" if armed else "disarm")
             else:
                 self.btn_arm.config(state=tk.DISABLED, text="Arm")
