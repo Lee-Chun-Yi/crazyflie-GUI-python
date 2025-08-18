@@ -7,11 +7,23 @@ import math
 from .models import SharedState
 from .config import load_config, save_config
 from .control import UDPInput, SetpointLoop, PWMSetpointLoop, PWMUDPReceiver
-from .vicon import ViconUDP51001
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .link import LinkManager
+
+def decode_vicon_data_matlab(payload: bytes):
+    """
+    Expect 6 float32 in big-endian order: >6f.
+    Return tuple: (x, y, z, rx, ry, rz) as Python floats.
+    If payload is longer than 24 bytes, only use the first 24 bytes.
+    Raise ValueError on insufficient length or struct error.
+    """
+    import struct as _struct
+    if len(payload) < 24:
+        raise ValueError(f"short packet: {len(payload)} bytes")
+    x, y, z, rx, ry, rz = _struct.unpack(">6f", payload[:24])
+    return float(x), float(y), float(z), float(rx), float(ry), float(rz)
 
 UDP_COORD_PORT = 51002
 RADIO_BITRATES = ("2M", "1M", "250K")
@@ -152,9 +164,13 @@ class App(tk.Tk):
         self.vx_var = tk.StringVar(value="--")
         self.vy_var = tk.StringVar(value="--")
         self.vz_var = tk.StringVar(value="--")
+        self.vrx_var = tk.StringVar(value="--")
+        self.vry_var = tk.StringVar(value="--")
+        self.vrz_var = tk.StringVar(value="--")
         self._vrx_running = False
         self._vrx_thread: threading.Thread | None = None
-        self._vrx_q: queue.Queue = queue.Queue()
+        self._vrx_sock: socket.socket | None = None
+        self._vrx_lock = threading.Lock()
         self._last_vicon: tuple[float, float, float, float, float, float] | None = None
 
         # Build tabs
@@ -249,6 +265,11 @@ class App(tk.Tk):
         self.btn_vrx_start = ttk.Button(row_top, text="Start", command=self._vrx_start)
         self.btn_vrx_stop  = ttk.Button(row_top, text="Stop",  command=self._vrx_stop, state=tk.DISABLED)
         self.btn_vrx_start.pack(side=tk.LEFT); self.btn_vrx_stop.pack(side=tk.LEFT, padx=(6,0))
+
+        row_rot = ttk.Frame(vgp); row_rot.pack(fill=tk.X, pady=(0,6))
+        ttk.Label(row_rot, text="Rx").pack(side=tk.LEFT); ttk.Entry(row_rot, width=10, textvariable=self.vrx_var, state="readonly").pack(side=tk.LEFT, padx=(0,8))
+        ttk.Label(row_rot, text="Ry").pack(side=tk.LEFT); ttk.Entry(row_rot, width=10, textvariable=self.vry_var, state="readonly").pack(side=tk.LEFT, padx=(0,8))
+        ttk.Label(row_rot, text="Rz").pack(side=tk.LEFT); ttk.Entry(row_rot, width=10, textvariable=self.vrz_var, state="readonly").pack(side=tk.LEFT, padx=(0,12))
 
         brow = ttk.Frame(vgp); brow.pack(fill=tk.X)
         ttk.Label(brow, text="X").grid(row=0, column=0, padx=(0,4))
@@ -431,10 +452,15 @@ class App(tk.Tk):
             self._ensure_3d_canvas()
 
     def _vrx_start(self):
+        sock = None
         try:
             self._ensure_3d_canvas()
             if self._vrx_running:
                 return
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("127.0.0.1", 8889))
+            sock.settimeout(0.2)
+            self._vrx_sock = sock
             self._vrx_running = True
             self._vrx_thread = threading.Thread(target=self._vrx_loop, daemon=True)
             self._vrx_thread.start()
@@ -442,11 +468,24 @@ class App(tk.Tk):
             self.btn_vrx_stop.configure(state=tk.NORMAL)
             self.log("Vicon UDP receive started")
         except Exception as e:
+            try:
+                if sock:
+                    sock.close()
+            except Exception:
+                pass
+            self._vrx_running = False
             self.log(f"Vicon receive start failed: {e}")
 
     def _vrx_stop(self):
         try:
             self._vrx_running = False
+            sock = self._vrx_sock
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            self._vrx_sock = None
             t = self._vrx_thread
             if t and t.is_alive():
                 t.join(timeout=0.5)
@@ -458,40 +497,23 @@ class App(tk.Tk):
             self.log(f"Vicon receive stop failed: {e}")
 
     def _vrx_loop(self):
-        sock = None
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.bind(("127.0.0.1", 8889))
-        except Exception as e:
-            self.enqueue_log(f"[Vicon] socket error: {e}")
-            self._vrx_running = False
-            if sock:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
-            return
-        try:
-            sock.settimeout(0.2)
-            while self._vrx_running:
-                try:
-                    data, _ = sock.recvfrom(1024)
-                except socket.timeout:
-                    continue
-                except Exception:
-                    if not self._vrx_running:
-                        break
-                    else:
-                        continue
-                vals = decode_vicon_data(data)
-                if vals:
-                    self._vrx_q.put(vals)
-        finally:
-            if sock:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
+        sock = self._vrx_sock
+        last_err = 0.0
+        while self._vrx_running and sock:
+            try:
+                data, _ = sock.recvfrom(2048)
+                x, y, z, rx, ry, rz = decode_vicon_data_matlab(data)
+                with self._vrx_lock:
+                    self._last_vicon = (x, y, z, rx, ry, rz)
+                    self.trail_buf.append((time.time(), x, y, z))
+            except (socket.timeout, BlockingIOError):
+                continue
+            except Exception as e:
+                now = time.time()
+                if now - last_err >= 1.0:
+                    self.enqueue_log(f"[Vicon] decode error: {e}")
+                    last_err = now
+                continue
 
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
@@ -866,14 +888,17 @@ class App(tk.Tk):
                 self.log(self._log_q.get())
             except Exception:
                 pass
-        while not self._vrx_q.empty():
+        with self._vrx_lock:
+            vals = self._last_vicon
+        if vals:
             try:
-                vals = self._vrx_q.get_nowait()
                 x, y, z, rx, ry, rz = vals
                 self.vx_var.set(f"{x:.3f}")
                 self.vy_var.set(f"{y:.3f}")
                 self.vz_var.set(f"{z:.3f}")
-                self._last_vicon = vals
+                self.vrx_var.set(f"{rx:.3f}")
+                self.vry_var.set(f"{ry:.3f}")
+                self.vrz_var.set(f"{rz:.3f}")
             except Exception:
                 pass
 
@@ -963,11 +988,12 @@ class App(tk.Tk):
         if self.canvas3d is None:
             self.after(250, self._ui_tick)
             return
-        last = self._last_vicon
+        with self._vrx_lock:
+            last = self._last_vicon
+            trail = list(self.trail_buf)
         if last:
             x, y, z, rx, ry, rz = last
             now = time.time()
-            self.trail_buf.append((now, x, y, z))
             self._apply_axes_bounds()
             if self._point_artist is None:
                 self._point_artist = self.ax3d.scatter([x], [y], [z], s=12)
@@ -977,7 +1003,7 @@ class App(tk.Tk):
             secs = max(0, int(self.trail_secs_var.get() or 0))
             k = max(1, int(self.decimate_var.get() or 1))
             if secs > 0:
-                pts = [(tx, xx, yy, zz) for (tx, xx, yy, zz) in self.trail_buf if now - tx <= secs]
+                pts = [(tx, xx, yy, zz) for (tx, xx, yy, zz) in trail if now - tx <= secs]
                 if len(pts) >= 2:
                     xs = [p[1] for p in pts][::k]
                     ys = [p[2] for p in pts][::k]

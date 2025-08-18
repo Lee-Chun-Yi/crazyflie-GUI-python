@@ -1,8 +1,10 @@
 import socket
 import struct
 import time
+import pytest
 
 from cfmarslab.vicon import ViconUDP51001
+from cfmarslab.ui import decode_vicon_data_matlab
 
 
 def test_vicon_udp_receives_packet(tmp_path):
@@ -30,3 +32,16 @@ def test_vicon_udp_receives_packet(tmp_path):
     assert len(result) == 6
     for r, v in zip(result, vals):
         assert abs(r - v) < 1e-5
+
+
+def test_decode_vicon_data_matlab():
+    vals = (1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+    data = struct.pack(">6f", *vals)
+    res = decode_vicon_data_matlab(data)
+    for r, v in zip(res, vals):
+        assert abs(r - v) < 1e-6
+    res = decode_vicon_data_matlab(data + b"extra")
+    for r, v in zip(res, vals):
+        assert abs(r - v) < 1e-6
+    with pytest.raises(ValueError):
+        decode_vicon_data_matlab(b"\x00" * 10)
