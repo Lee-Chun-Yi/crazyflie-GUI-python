@@ -19,6 +19,19 @@ from threading import Event, Thread
 from typing import Tuple, Optional, Callable
 
 
+def decode_vicon_data(data: bytes) -> Optional[Tuple[float, float, float, float, float, float]]:
+    """Decode a Vicon UDP packet containing 6 float32 values.
+
+    Returns a tuple ``(x, y, z, rx, ry, rz)`` if the packet is valid, otherwise
+    ``None``."""
+    if len(data) != 24:
+        return None
+    try:
+        return struct.unpack("<6f", data)
+    except Exception:
+        return None
+
+
 class ViconUDP51001:
     """Background UDP receiver for Vicon position/orientation data.
 
@@ -96,7 +109,6 @@ class ViconUDP51001:
         try:
             sock.settimeout(0.2)
             recv_warned = False
-            unpack_warned = False
             while self._running.is_set():
                 try:
                     data, _ = sock.recvfrom(1024)
@@ -107,14 +119,8 @@ class ViconUDP51001:
                         self._log(f"[Vicon] recv error: {e}")
                         recv_warned = True
                     continue
-                if len(data) != 24:
-                    continue
-                try:
-                    vals = struct.unpack("<6f", data)
-                except Exception as e:
-                    if not unpack_warned:
-                        self._log(f"[Vicon] unpack error: {e}")
-                        unpack_warned = True
+                vals = decode_vicon_data(data)
+                if vals is None:
                     continue
                 self._last = tuple(float(v) for v in vals)
         finally:
