@@ -149,13 +149,13 @@ class App(tk.Tk):
         self._point_artist  = None
         self._last_draw_ts = 0.0
         self._last_kpi_update = 0.0
-        self.vrx_hz_var = tk.IntVar(value=30)
         self.vx_var = tk.StringVar(value="--")
         self.vy_var = tk.StringVar(value="--")
         self.vz_var = tk.StringVar(value="--")
         self._vrx_running = False
-        self._vrx_job = None
-        self.vicon = None
+        self._vrx_thread: threading.Thread | None = None
+        self._vrx_q: queue.Queue = queue.Queue()
+        self._last_vicon: tuple[float, float, float, float, float, float] | None = None
 
         # Build tabs
         self._build_controls_tab(tab_controls)
@@ -238,16 +238,14 @@ class App(tk.Tk):
         self.btn_xyz_stop  = ttk.Button(row2, text="Stop setpoints", state=tk.DISABLED, command=self.stop_coords)
         self.btn_xyz_start.pack(side=tk.LEFT); self.btn_xyz_stop.pack(side=tk.LEFT, padx=6)
 
-        # Vicon (UDP 51001)
-        vgp = ttk.Labelframe(parent, text="Vicon (UDP 51001)", padding=8)
+        # Vicon (UDP 8889)
+        vgp = ttk.Labelframe(parent, text="Vicon (UDP 8889)", padding=8)
         vgp.pack(fill=tk.BOTH, pady=(8,0))
 
         row_top = ttk.Frame(vgp); row_top.pack(fill=tk.X, pady=(0,6))
         ttk.Label(row_top, text="X").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vx_var, state="readonly").pack(side=tk.LEFT, padx=(0,8))
         ttk.Label(row_top, text="Y").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vy_var, state="readonly").pack(side=tk.LEFT, padx=(0,8))
         ttk.Label(row_top, text="Z").pack(side=tk.LEFT); ttk.Entry(row_top, width=10, textvariable=self.vz_var, state="readonly").pack(side=tk.LEFT, padx=(0,12))
-        ttk.Label(row_top, text="Rate (Hz)").pack(side=tk.LEFT)
-        ttk.Spinbox(row_top, from_=1, to=200, width=6, textvariable=self.vrx_hz_var).pack(side=tk.LEFT, padx=(4,12))
         self.btn_vrx_start = ttk.Button(row_top, text="Start", command=self._vrx_start)
         self.btn_vrx_stop  = ttk.Button(row_top, text="Stop",  command=self._vrx_stop, state=tk.DISABLED)
         self.btn_vrx_start.pack(side=tk.LEFT); self.btn_vrx_stop.pack(side=tk.LEFT, padx=(6,0))
@@ -435,13 +433,13 @@ class App(tk.Tk):
     def _vrx_start(self):
         try:
             self._ensure_3d_canvas()
-            if not self.vicon:
-                self.vicon = ViconUDP51001(port=51001, logger=self.enqueue_log)
-            self.vicon.start()
+            if self._vrx_running:
+                return
             self._vrx_running = True
+            self._vrx_thread = threading.Thread(target=self._vrx_loop, daemon=True)
+            self._vrx_thread.start()
             self.btn_vrx_start.configure(state=tk.DISABLED)
             self.btn_vrx_stop.configure(state=tk.NORMAL)
-            self._schedule_vrx_tick()
             self.log("Vicon UDP receive started")
         except Exception as e:
             self.log(f"Vicon receive start failed: {e}")
@@ -449,34 +447,51 @@ class App(tk.Tk):
     def _vrx_stop(self):
         try:
             self._vrx_running = False
-            if self._vrx_job is not None:
-                try: self.after_cancel(self._vrx_job)
-                except Exception: pass
-                self._vrx_job = None
-            if self.vicon:
-                self.vicon.stop()
+            t = self._vrx_thread
+            if t and t.is_alive():
+                t.join(timeout=0.5)
+            self._vrx_thread = None
             self.btn_vrx_start.configure(state=tk.NORMAL)
             self.btn_vrx_stop.configure(state=tk.DISABLED)
             self.log("Vicon UDP receive stopped")
         except Exception as e:
             self.log(f"Vicon receive stop failed: {e}")
 
-    def _schedule_vrx_tick(self):
-        if not self._vrx_running: return
-        period_ms = max(10, int(1000 / max(1, int(self.vrx_hz_var.get() or 1))))
-        self._vrx_tick()
-        self._vrx_job = self.after(period_ms, self._schedule_vrx_tick)
-
-    def _vrx_tick(self):
+    def _vrx_loop(self):
+        sock = None
         try:
-            if self.vicon:
-                x,y,z,rx,ry,rz = self.vicon.get_last()
-                if x == x and y == y and z == z:
-                    self.vx_var.set(f"{x:.3f}")
-                    self.vy_var.set(f"{y:.3f}")
-                    self.vz_var.set(f"{z:.3f}")
-        except Exception:
-            pass
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("127.0.0.1", 8889))
+        except Exception as e:
+            self.enqueue_log(f"[Vicon] socket error: {e}")
+            self._vrx_running = False
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            return
+        try:
+            sock.settimeout(0.2)
+            while self._vrx_running:
+                try:
+                    data, _ = sock.recvfrom(1024)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    if not self._vrx_running:
+                        break
+                    else:
+                        continue
+                vals = decode_vicon_data(data)
+                if vals:
+                    self._vrx_q.put(vals)
+        finally:
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
 
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
@@ -851,6 +866,16 @@ class App(tk.Tk):
                 self.log(self._log_q.get())
             except Exception:
                 pass
+        while not self._vrx_q.empty():
+            try:
+                vals = self._vrx_q.get_nowait()
+                x, y, z, rx, ry, rz = vals
+                self.vx_var.set(f"{x:.3f}")
+                self.vy_var.set(f"{y:.3f}")
+                self.vz_var.set(f"{z:.3f}")
+                self._last_vicon = vals
+            except Exception:
+                pass
 
         # telemetry heads-up
         with self.state_model.lock:
@@ -938,12 +963,7 @@ class App(tk.Tk):
         if self.canvas3d is None:
             self.after(250, self._ui_tick)
             return
-        last = None
-        try:
-            if self.vicon:
-                last = self.vicon.get_last()
-        except Exception:
-            last = None
+        last = self._last_vicon
         if last:
             x, y, z, rx, ry, rz = last
             now = time.time()
