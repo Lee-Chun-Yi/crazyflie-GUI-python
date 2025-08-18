@@ -20,7 +20,7 @@ Follow these steps to get the project onto your machine:
    ```bash
    cd crazyflie-GUI-python
    ```
-4. Install the project in editable mode (this creates the `cfmarslab` command):
+4. Install setup tools & the project:
    ```bash
    python -m pip install -U pip setuptools wheel
    python -m pip install -e .
