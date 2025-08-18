@@ -64,74 +64,72 @@ class App(tk.Tk):
 
         root = ttk.Frame(self, padding=8)
         root.pack(fill=tk.BOTH, expand=True)
+        root.grid_rowconfigure(0, weight=0)
         root.grid_rowconfigure(1, weight=1)
         root.grid_columnconfigure(0, weight=0)
         root.grid_columnconfigure(1, weight=1)
 
-        # --- Connection bar ---
-        top = ttk.Frame(root)
-        top.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Label(top, text="Interface:").pack(side=tk.LEFT)
+        # explicit panes
+        self.topbar_left = ttk.Frame(root)
+        self.topbar_left.grid(row=0, column=0, sticky="nw", padx=4, pady=4)
+        self.telemetry_frame = ttk.Frame(root)
+        self.telemetry_frame.grid(row=0, column=1, sticky="ne", padx=6, pady=4)
+        self.left_pane = ttk.Frame(root)
+        self.left_pane.grid(row=1, column=0, sticky="nsew", padx=(4,2), pady=(0,4))
+        self.right_pane = ttk.Frame(root, padding=6)
+        self.right_pane.grid(row=1, column=1, sticky="nsew", padx=(2,4), pady=(0,4))
+        self.right_pane.rowconfigure(0, weight=1)
+        self.right_pane.columnconfigure(0, weight=1)
+
+        # --- Connection bar in top-left ---
+        ttk.Label(self.topbar_left, text="Interface:").pack(side=tk.LEFT)
         self.iface_var = tk.StringVar(value="radio")
-        self.iface_combo = ttk.Combobox(top, textvariable=self.iface_var, width=16, values=["radio"], state="readonly")
+        self.iface_combo = ttk.Combobox(self.topbar_left, textvariable=self.iface_var, width=16, values=["radio"], state="readonly")
         self.iface_combo.pack(side=tk.LEFT, padx=6)
         self.iface_combo.bind("<<ComboboxSelected>>", lambda *_: self._rebuild_uri())
 
-        self.btn_conn = ttk.Button(top, text="Connect", command=self.on_connect)
-        self.btn_disc = ttk.Button(top, text="Disconnect", command=self.on_disconnect, state=tk.DISABLED)
-        self.btn_scan = ttk.Button(top, text="Scan", command=self._on_scan)
+        self.btn_conn = ttk.Button(self.topbar_left, text="Connect", command=self.on_connect)
+        self.btn_disc = ttk.Button(self.topbar_left, text="Disconnect", command=self.on_disconnect, state=tk.DISABLED)
+        self.btn_scan = ttk.Button(self.topbar_left, text="Scan", command=self._on_scan)
         self.btn_conn.pack(side=tk.LEFT, padx=(6,0)); self.btn_disc.pack(side=tk.LEFT, padx=(6,0)); self.btn_scan.pack(side=tk.LEFT, padx=(6,0))
 
-        ttk.Label(top, text="Channel:").pack(side=tk.LEFT, padx=(12,0))
+        ttk.Label(self.topbar_left, text="Channel:").pack(side=tk.LEFT, padx=(12,0))
         self.chan_var = tk.IntVar(value=99)
-        ttk.Spinbox(top, from_=0, to=125, width=5, textvariable=self.chan_var, command=self._rebuild_uri).pack(side=tk.LEFT, padx=(4,12))
-        ttk.Label(top, text="Bitrate:").pack(side=tk.LEFT)
+        ttk.Spinbox(self.topbar_left, from_=0, to=125, width=5, textvariable=self.chan_var, command=self._rebuild_uri).pack(side=tk.LEFT, padx=(4,12))
+        ttk.Label(self.topbar_left, text="Bitrate:").pack(side=tk.LEFT)
         self.rate_var = tk.StringVar(value="2M")
-        self.rate_combo = ttk.Combobox(top, textvariable=self.rate_var, width=6, values=list(RADIO_BITRATES), state="readonly")
+        self.rate_combo = ttk.Combobox(self.topbar_left, textvariable=self.rate_var, width=6, values=list(RADIO_BITRATES), state="readonly")
         self.rate_combo.pack(side=tk.LEFT, padx=(4,12))
         self.rate_combo.bind("<<ComboboxSelected>>", lambda *_: self._rebuild_uri())
-        ttk.Label(top, text="Address:").pack(side=tk.LEFT)
+        ttk.Label(self.topbar_left, text="Address:").pack(side=tk.LEFT)
         self.addr_var = tk.StringVar(value="0xE7E7E7E7E7")
-        addr_e = ttk.Entry(top, width=14, textvariable=self.addr_var); addr_e.pack(side=tk.LEFT, padx=(4,12))
+        addr_e = ttk.Entry(self.topbar_left, width=14, textvariable=self.addr_var); addr_e.pack(side=tk.LEFT, padx=(4,12))
         addr_e.bind("<KeyRelease>", lambda *_: self._rebuild_uri())
 
-        # MRU
+        # MRU list
         self.uri_var = tk.StringVar()
         self.mru_var = tk.StringVar()
-        self.mru_combo = ttk.Combobox(top, textvariable=self.mru_var, width=40, values=self.cfg.recent_uris, state="readonly")
+        self.mru_combo = ttk.Combobox(self.topbar_left, textvariable=self.mru_var, width=40, values=self.cfg.recent_uris, state="readonly")
         self.mru_combo.pack(side=tk.LEFT)
         self.mru_combo.bind("<<ComboboxSelected>>", self._on_select_mru)
         self._rebuild_uri()
 
-        # Telemetry frame anchored top-right
-        style = ttk.Style(self)
-        style.configure("Telemetry.TLabel", font=("Segoe UI", 12, "bold"), foreground="#0044cc")
-        self._telemetry_frame = ttk.Frame(root)
-        self._telemetry_frame.grid(row=1, column=1, sticky="ne")
-        tele_row1 = ttk.Frame(self._telemetry_frame)
-        self.lbl_latency = ttk.Label(tele_row1, text="Latency: -- ms", style="Telemetry.TLabel")
-        self.lbl_latency.pack(side=tk.LEFT, padx=(12,0))
-        self.lbl_rssi = ttk.Label(tele_row1, text="RSSI: --", style="Telemetry.TLabel")
-        self.lbl_rssi.pack(side=tk.LEFT, padx=(12,0))
-        self.lbl_vbat = ttk.Label(tele_row1, text="VBAT: -- V", style="Telemetry.TLabel")
-        self.lbl_vbat.pack(side=tk.LEFT, padx=(12,0))
-        tele_row1.pack(anchor="e")
-        tele_row2 = ttk.Frame(self._telemetry_frame)
-        self.lbl_ctrl_timing = ttk.Label(tele_row2, text="Timing: P95 -- ms  |  P99 -- ms  |  Miss -- %", style="Telemetry.TLabel")
-        self.lbl_ctrl_timing.pack(side=tk.LEFT, padx=(12,0))
-        tele_row2.pack(anchor="e")
-        self._telemetry_frame.lift()
+        # Telemetry labels on top-right
+        self.lbl_latency = ttk.Label(self.telemetry_frame, text="Latency: -- ms")
+        self.lbl_latency.grid(row=0, column=0, padx=(0,8))
+        self.lbl_rssi = ttk.Label(self.telemetry_frame, text="RSSI: --")
+        self.lbl_rssi.grid(row=0, column=1, padx=(0,8))
+        self.lbl_timing = ttk.Label(self.telemetry_frame, text="Timing: P95 -- ms | P99 -- ms | Miss -- %")
+        self.lbl_timing.grid(row=0, column=2)
 
         # --- Main area ---
-        left_frame = ttk.Frame(root)
-        left_frame.grid(row=1, column=0, sticky="nsew")
-        self.nb = ttk.Notebook(left_frame)
-        tab_controls = ttk.Frame(self.nb)
-        tab_logparam = ttk.Frame(self.nb)
-        self.nb.add(tab_controls, text="Controls")
-        self.nb.add(tab_logparam, text="Log Parameter")
-        self.nb.pack(fill=tk.BOTH, expand=True)
-        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self.notebook = ttk.Notebook(self.left_pane)
+        tab_controls = ttk.Frame(self.notebook)
+        tab_logparam = ttk.Frame(self.notebook)
+        self.notebook.add(tab_controls, text="Controls")
+        self.notebook.add(tab_logparam, text="Log Parameter")
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # Vicon plot state
         self.trail_buf = deque(maxlen=20000)   # (t, x, y, z)
@@ -154,12 +152,7 @@ class App(tk.Tk):
         self._build_controls_tab(tab_controls)
         self._build_log_param_tab(tab_logparam)
 
-        # Right: placeholder for 3D plot and console
-        self.right_pane = ttk.Frame(root, padding=6)
-        self.right_pane.grid(row=1, column=1, sticky="nsew")
-        self.right_pane.grid_rowconfigure(0, weight=1)
-        self.right_pane.grid_columnconfigure(0, weight=1)
-
+        # Right pane contents: 3D plot placeholder and console
         self._plot_frame = ttk.Frame(self.right_pane)
         self._plot_frame.grid(row=0, column=0, sticky="nsew")
 
@@ -168,8 +161,8 @@ class App(tk.Tk):
         self.console.pack(fill=tk.BOTH, expand=True)
         right_console.grid(row=1, column=0, sticky="nsew", pady=(6,0))
 
-        self.fig = None
-        self.ax3d = None
+        self._fig = None
+        self._ax3d = None
         self._canvas = None
         self.azim_var = tk.DoubleVar(value=-60.0)
         self.elev_var = tk.DoubleVar(value=20.0)
@@ -319,7 +312,7 @@ class App(tk.Tk):
         ttk.Button(safe, text="Land (ramp down)", command=self.land).pack(side=tk.LEFT, padx=8)
 
     def _apply_axes_bounds(self):
-        if not self.ax3d:
+        if not self._ax3d:
             return
         try:
             bx0 = float(self.bx0.get()); bx1 = float(self.bx1.get())
@@ -328,9 +321,9 @@ class App(tk.Tk):
             if bx0 == bx1: bx1 = bx0 + 1.0
             if by0 == by1: by1 = by0 + 1.0
             if bz0 == bz1: bz1 = bz0 + 1.0
-            self.ax3d.set_xlim(min(bx0,bx1), max(bx0,bx1))
-            self.ax3d.set_ylim(min(by0,by1), max(by0,by1))
-            self.ax3d.set_zlim(min(bz0,bz1), max(bz0,bz1))
+            self._ax3d.set_xlim(min(bx0,bx1), max(bx0,bx1))
+            self._ax3d.set_ylim(min(by0,by1), max(by0,by1))
+            self._ax3d.set_zlim(min(bz0,bz1), max(bz0,bz1))
         except Exception:
             pass
 
@@ -340,16 +333,16 @@ class App(tk.Tk):
             self._canvas.draw_idle()
 
     def _update_view(self, *_):
-        if not self.ax3d:
+        if not self._ax3d:
             return
         az = float(self.azim_var.get())
         el = float(self.elev_var.get())
-        self.ax3d.view_init(elev=el, azim=az)
+        self._ax3d.view_init(elev=el, azim=az)
         if self._canvas:
             self._canvas.draw_idle()
 
     def _draw_quiver(self, x, y, z, roll, pitch, yaw):
-        if not self.ax3d:
+        if not self._ax3d:
             return
         if self._quiver_artist is not None:
             try: self._quiver_artist.remove()
@@ -361,9 +354,9 @@ class App(tk.Tk):
         dx =  cy*cz
         dy =  cy*sz
         dz = -sy
-        length = 0.2 * max(1.0, abs(self.ax3d.get_zlim()[1]-self.ax3d.get_zlim()[0]))/5.0
+        length = 0.2 * max(1.0, abs(self._ax3d.get_zlim()[1]-self._ax3d.get_zlim()[0]))/5.0
         try:
-            self._quiver_artist = self.ax3d.quiver(x, y, z, dx, dy, dz, length=length, normalize=True)
+            self._quiver_artist = self._ax3d.quiver(x, y, z, dx, dy, dz, length=length, normalize=True)
         except Exception:
             self._quiver_artist = None
 
@@ -385,49 +378,32 @@ class App(tk.Tk):
             self._canvas.draw_idle()
 
     def _ensure_3d_canvas(self):
-        if self._canvas:
-            return
-        if getattr(self, "_canvas_failed", False):
+        if getattr(self, "_canvas", None):
             return
         try:
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-        except Exception:
-            ttk.Label(self._plot_frame, text="3D view unavailable").grid(row=0, column=0, sticky="nsew")
-            self._plot_frame.grid_rowconfigure(0, weight=1)
-            self._plot_frame.grid_columnconfigure(0, weight=1)
-            self._canvas_failed = True
+        except Exception as e:
+            if not getattr(self, "_matplotlib_error_label", None):
+                self._matplotlib_error_label = ttk.Label(self._plot_frame, text=f"3D view unavailable: {e}")
+                self._matplotlib_error_label.pack(fill="both", expand=True)
             return
-        self.fig = Figure(figsize=(6, 4), dpi=100)
-        self.ax3d = self.fig.add_subplot(111, projection="3d")
-        self.fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.98)
-        self.ax3d.set_xlabel("X"); self.ax3d.set_ylabel("Y"); self.ax3d.set_zlabel("Z")
-        self.ax3d.set_xlim(-1000, 1000)
-        self.ax3d.set_ylim(-1000, 1000)
-        self.ax3d.set_zlim(0, 1500)
-        self._canvas = FigureCanvasTkAgg(self.fig, master=self._plot_frame)
-        self._canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
-        self.elev_scale = ttk.Scale(self._plot_frame, from_=90.0, to=-90.0,
-                                    variable=self.elev_var, orient=tk.VERTICAL,
-                                    command=self._update_view)
-        self.elev_scale.grid(row=0, column=1, sticky="ns")
-        self.azim_scale = ttk.Scale(self._plot_frame, from_=-180.0, to=180.0,
-                                    variable=self.azim_var, orient=tk.HORIZONTAL,
-                                    command=self._update_view)
-        self.azim_scale.grid(row=1, column=0, sticky="ew")
-        self._plot_frame.grid_rowconfigure(0, weight=1)
-        self._plot_frame.grid_columnconfigure(0, weight=1)
-        self._apply_axes_bounds()
-        self._update_view()
+        self._fig = Figure(figsize=(5, 4), dpi=100)
+        self._ax3d = self._fig.add_subplot(111, projection="3d")
+        self._fig.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02)
+        self._ax3d.set_xlim(-1000, 1000)
+        self._ax3d.set_ylim(-1000, 1000)
+        self._ax3d.set_zlim(0, 1500)
+        self._canvas = FigureCanvasTkAgg(self._fig, master=self._plot_frame)
+        self._canvas.draw_idle()
+        self._canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._last_draw_ts = 0.0
 
-    def _on_tab_changed(self, *_):
-        try:
-            tab = self.nb.tab(self.nb.select(), "text")
-            if tab and ("Vicon" in tab or "3D" in tab):
-                self._ensure_3d_canvas()
-        except Exception:
-            pass
+    def _on_tab_changed(self, evt):
+        tab_text = self.notebook.tab(self.notebook.select(), "text") or ""
+        if "Vicon" in tab_text or "3D" in tab_text:
+            self._ensure_3d_canvas()
 
     def _vrx_start(self):
         try:
@@ -852,11 +828,11 @@ class App(tk.Tk):
         # telemetry heads-up
         with self.state_model.lock:
             v = float(self.state_model.vbat or 0.0)
-            rssi = getattr(self.state_model, 'rssi', float('nan'))
-            lat = getattr(self.state_model, 'latency_ms', float('nan'))
-        self.title(f"Crazyflie GUI — VBAT: {v:.2f} V"); self.lbl_vbat.configure(text=f"VBAT: {v:.2f} V")
-        self.lbl_rssi.configure(text=f"RSSI: {rssi:.0f} dBm" if rssi==rssi else "RSSI: --")
-        self.lbl_latency.configure(text=f"Latency: {lat:.1f} ms" if lat==lat else "Latency: -- ms")
+            rssi_dbm = getattr(self.state_model, 'rssi', float('nan'))
+            lat_ms = getattr(self.state_model, 'latency_ms', float('nan'))
+        self.title(f"Crazyflie GUI — VBAT: {v:.2f} V")
+        self.lbl_latency.config(text=f"Latency: {lat_ms:.1f} ms" if lat_ms==lat_ms else "Latency: -- ms")
+        self.lbl_rssi.config(text=f"RSSI: {rssi_dbm}" if rssi_dbm==rssi_dbm else "RSSI: --")
 
         # arm/disarm toggle state
         try:
@@ -882,12 +858,11 @@ class App(tk.Tk):
                     loop = self.pwm_loop
                 if loop:
                     p95, p99, miss_pct = loop.get_cached_stats(now)
-                    self.lbl_ctrl_timing.configure(
-                        text=f"Timing: P95 {p95:.2f} ms  |  P99 {p99:.2f} ms  |  Miss {miss_pct:.2f} %")
+                    self.lbl_timing.config(text=f"Timing: P95 {p95:.1f} ms | P99 {p99:.1f} ms | Miss {miss_pct:.1f} %")
                 else:
-                    self.lbl_ctrl_timing.configure(text="Timing: P95 -- ms  |  P99 -- ms  |  Miss -- %")
+                    self.lbl_timing.config(text="Timing: P95 -- ms | P99 -- ms | Miss -- %")
             except Exception:
-                pass
+                self.lbl_timing.config(text="Timing: P95 -- ms | P99 -- ms | Miss -- %")
 
             try:
                 if self.setpoints and self.setpoints.is_running():
@@ -922,6 +897,9 @@ class App(tk.Tk):
         # 3D Vicon plot
         if self._canvas is None and self.right_pane.winfo_ismapped():
             self._ensure_3d_canvas()
+        if self._canvas is None:
+            self.after(250, self._ui_tick)
+            return
         last = None
         try:
             if self.vicon:
@@ -929,13 +907,12 @@ class App(tk.Tk):
         except Exception:
             last = None
         if last:
-            self._ensure_3d_canvas()
             x, y, z, rx, ry, rz = last
             now = time.time()
             self.trail_buf.append((now, x, y, z))
             self._apply_axes_bounds()
             if self._point_artist is None:
-                self._point_artist = self.ax3d.scatter([x], [y], [z], s=12)
+                self._point_artist = self._ax3d.scatter([x], [y], [z], s=12)
             else:
                 self._point_artist._offsets3d = ([x], [y], [z])
             self._draw_quiver(x, y, z, roll=rx, pitch=ry, yaw=rz)
@@ -948,7 +925,7 @@ class App(tk.Tk):
                     ys = [p[2] for p in pts][::k]
                     zs = [p[3] for p in pts][::k]
                     if self._trail_artist is None:
-                        self._trail_artist, = self.ax3d.plot(xs, ys, zs, linewidth=1)
+                        self._trail_artist, = self._ax3d.plot(xs, ys, zs, linewidth=1)
                     else:
                         self._trail_artist.set_data(xs, ys)
                         self._trail_artist.set_3d_properties(zs)
@@ -960,7 +937,7 @@ class App(tk.Tk):
                 try: self._trail_artist.remove()
                 except Exception: pass
                 self._trail_artist = None
-            if self._canvas and now - self._last_draw_ts >= 0.1:
+            if now - self._last_draw_ts >= 0.1:
                 self._canvas.draw_idle()
                 self._last_draw_ts = now
 
