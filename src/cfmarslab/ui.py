@@ -119,8 +119,14 @@ class App(tk.Tk):
         self.lbl_latency.grid(row=0, column=0, padx=(0,8))
         self.lbl_rssi = ttk.Label(self.telemetry_frame, text="RSSI: --")
         self.lbl_rssi.grid(row=0, column=1, padx=(0,8))
-        self.lbl_timing = ttk.Label(self.telemetry_frame, text="Timing: P95 -- ms | P99 -- ms | Miss -- %")
-        self.lbl_timing.grid(row=0, column=2)
+        self.lbl_vbat = ttk.Label(self.telemetry_frame, text="VBAT: -- V")
+        self.lbl_vbat.grid(row=0, column=2, padx=(0,8))
+        self.lbl_p95 = ttk.Label(self.telemetry_frame, text="P95: -- ms")
+        self.lbl_p95.grid(row=1, column=0, padx=(0,8))
+        self.lbl_p99 = ttk.Label(self.telemetry_frame, text="P99: -- ms")
+        self.lbl_p99.grid(row=1, column=1, padx=(0,8))
+        self.lbl_miss = ttk.Label(self.telemetry_frame, text="Miss: -- %")
+        self.lbl_miss.grid(row=1, column=2)
 
         # --- Main area ---
         self.notebook = ttk.Notebook(self.left_pane)
@@ -827,10 +833,15 @@ class App(tk.Tk):
 
         # telemetry heads-up
         with self.state_model.lock:
-            v = float(self.state_model.vbat or 0.0)
+            v = getattr(self.state_model, 'vbat', float('nan'))
             rssi_dbm = getattr(self.state_model, 'rssi', float('nan'))
             lat_ms = getattr(self.state_model, 'latency_ms', float('nan'))
-        self.title(f"Crazyflie GUI — VBAT: {v:.2f} V")
+        if v == v:
+            self.title(f"Crazyflie GUI — VBAT: {v:.2f} V")
+            self.lbl_vbat.config(text=f"VBAT: {v:.2f} V")
+        else:
+            self.title("Crazyflie GUI — VBAT: -- V")
+            self.lbl_vbat.config(text="VBAT: -- V")
         self.lbl_latency.config(text=f"Latency: {lat_ms:.1f} ms" if lat_ms==lat_ms else "Latency: -- ms")
         self.lbl_rssi.config(text=f"RSSI: {rssi_dbm}" if rssi_dbm==rssi_dbm else "RSSI: --")
 
@@ -858,11 +869,17 @@ class App(tk.Tk):
                     loop = self.pwm_loop
                 if loop:
                     p95, p99, miss_pct = loop.get_cached_stats(now)
-                    self.lbl_timing.config(text=f"Timing: P95 {p95:.1f} ms | P99 {p99:.1f} ms | Miss {miss_pct:.1f} %")
+                    self.lbl_p95.config(text=f"P95: {p95:.1f} ms")
+                    self.lbl_p99.config(text=f"P99: {p99:.1f} ms")
+                    self.lbl_miss.config(text=f"Miss: {miss_pct:.1f} %")
                 else:
-                    self.lbl_timing.config(text="Timing: P95 -- ms | P99 -- ms | Miss -- %")
+                    self.lbl_p95.config(text="P95: -- ms")
+                    self.lbl_p99.config(text="P99: -- ms")
+                    self.lbl_miss.config(text="Miss: -- %")
             except Exception:
-                self.lbl_timing.config(text="Timing: P95 -- ms | P99 -- ms | Miss -- %")
+                self.lbl_p95.config(text="P95: -- ms")
+                self.lbl_p99.config(text="P99: -- ms")
+                self.lbl_miss.config(text="Miss: -- %")
 
             try:
                 if self.setpoints and self.setpoints.is_running():
