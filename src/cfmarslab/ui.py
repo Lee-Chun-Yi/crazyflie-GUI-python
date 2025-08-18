@@ -64,22 +64,23 @@ class App(tk.Tk):
 
         root = ttk.Frame(self, padding=8)
         root.pack(fill=tk.BOTH, expand=True)
-        root.grid_rowconfigure(0, weight=0)
-        root.grid_rowconfigure(1, weight=1)
-        root.grid_columnconfigure(0, weight=0)
-        root.grid_columnconfigure(1, weight=1)
 
-        # explicit panes
-        self.topbar_left = ttk.Frame(root)
-        self.topbar_left.grid(row=0, column=0, sticky="nw", padx=4, pady=4)
-        self.telemetry_frame = ttk.Frame(root)
-        self.telemetry_frame.grid(row=0, column=1, sticky="ne", padx=6, pady=4)
-        self.left_pane = ttk.Frame(root)
-        self.left_pane.grid(row=1, column=0, sticky="nsew", padx=(4,2), pady=(0,4))
-        self.right_pane = ttk.Frame(root, padding=6)
-        self.right_pane.grid(row=1, column=1, sticky="nsew", padx=(2,4), pady=(0,4))
-        self.right_pane.rowconfigure(0, weight=1)
-        self.right_pane.columnconfigure(0, weight=1)
+        # top bar with connection controls and telemetry
+        topbar = ttk.Frame(root)
+        topbar.pack(fill=tk.X)
+        self.topbar_left = ttk.Frame(topbar)
+        self.topbar_left.pack(side=tk.LEFT, padx=4, pady=4)
+        self.telemetry_frame = ttk.Frame(topbar)
+        self.telemetry_frame.pack(side=tk.RIGHT, padx=6, pady=4)
+
+        # two-column body: left controls, right plot/console
+        body = ttk.Frame(root)
+        body.pack(fill=tk.BOTH, expand=True)
+        self.left_pane = ttk.Frame(body)
+        self.left_pane.pack(side=tk.LEFT, fill=tk.Y, padx=(4,2), pady=(0,4))
+
+        self.right_box = ttk.Frame(body, padding=6)
+        self.right_box.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(2,4), pady=(0,4))
 
         # --- Connection bar in top-left ---
         ttk.Label(self.topbar_left, text="Interface:").pack(side=tk.LEFT)
@@ -115,17 +116,19 @@ class App(tk.Tk):
         self._rebuild_uri()
 
         # Telemetry labels on top-right
-        self.lbl_latency = ttk.Label(self.telemetry_frame, text="Latency: -- ms")
+        style = ttk.Style()
+        style.configure("TelemetryBold.TLabel", foreground="blue", font=("TkDefaultFont", 10, "bold"))
+        self.lbl_latency = ttk.Label(self.telemetry_frame, text="Latency: -- ms", style="TelemetryBold.TLabel")
         self.lbl_latency.grid(row=0, column=0, padx=(0,8))
-        self.lbl_rssi = ttk.Label(self.telemetry_frame, text="RSSI: --")
+        self.lbl_rssi = ttk.Label(self.telemetry_frame, text="RSSI: --", style="TelemetryBold.TLabel")
         self.lbl_rssi.grid(row=0, column=1, padx=(0,8))
-        self.lbl_vbat = ttk.Label(self.telemetry_frame, text="VBAT: -- V")
+        self.lbl_vbat = ttk.Label(self.telemetry_frame, text="VBAT: -- V", style="TelemetryBold.TLabel")
         self.lbl_vbat.grid(row=0, column=2, padx=(0,8))
-        self.lbl_p95 = ttk.Label(self.telemetry_frame, text="P95: -- ms")
+        self.lbl_p95 = ttk.Label(self.telemetry_frame, text="P95: -- ms", style="TelemetryBold.TLabel")
         self.lbl_p95.grid(row=1, column=0, padx=(0,8))
-        self.lbl_p99 = ttk.Label(self.telemetry_frame, text="P99: -- ms")
+        self.lbl_p99 = ttk.Label(self.telemetry_frame, text="P99: -- ms", style="TelemetryBold.TLabel")
         self.lbl_p99.grid(row=1, column=1, padx=(0,8))
-        self.lbl_miss = ttk.Label(self.telemetry_frame, text="Miss: -- %")
+        self.lbl_miss = ttk.Label(self.telemetry_frame, text="Miss: -- %", style="TelemetryBold.TLabel")
         self.lbl_miss.grid(row=1, column=2)
 
         # --- Main area ---
@@ -158,20 +161,37 @@ class App(tk.Tk):
         self._build_controls_tab(tab_controls)
         self._build_log_param_tab(tab_logparam)
 
-        # Right pane contents: 3D plot placeholder and console
-        self._plot_frame = ttk.Frame(self.right_pane)
-        self._plot_frame.grid(row=0, column=0, sticky="nsew")
+        # Right column contents: 3D plot and console
+        self.plot_container = ttk.Frame(self.right_box)
+        self.plot_container.pack(fill=tk.BOTH, expand=True)
+        self.plot_container.grid_rowconfigure(0, weight=1)
+        self.plot_container.grid_columnconfigure(0, weight=1)
 
-        right_console = ttk.Labelframe(self.right_pane, text="Console", padding=6)
-        self.console = scrolledtext.ScrolledText(right_console, height=8, state="disabled")
-        self.console.pack(fill=tk.BOTH, expand=True)
-        right_console.grid(row=1, column=0, sticky="nsew", pady=(6,0))
-
-        self._fig = None
-        self._ax3d = None
-        self._canvas = None
         self.azim_var = tk.DoubleVar(value=-60.0)
         self.elev_var = tk.DoubleVar(value=20.0)
+        self.scale_elev = ttk.Scale(
+            self.plot_container, from_=90.0, to=-90.0,
+            variable=self.elev_var, orient=tk.VERTICAL,
+            command=self._update_view,
+        )
+        self.scale_elev.grid(row=0, column=1, sticky="ns")
+        self.scale_azim = ttk.Scale(
+            self.plot_container, from_=-180.0, to=180.0,
+            variable=self.azim_var, orient=tk.HORIZONTAL,
+            command=self._update_view,
+        )
+        self.scale_azim.grid(row=1, column=0, sticky="ew")
+
+        self.console_frame = ttk.Labelframe(self.right_box, text="Console", padding=6, height=120)
+        self.console_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        self.console_frame.propagate(False)
+        self.console = scrolledtext.ScrolledText(self.console_frame, height=8, state="disabled")
+        self.console.pack(fill=tk.BOTH, expand=True)
+
+        self._fig = None
+        self.ax3d = None
+        self.canvas3d = None
+        self._update_view()
 
         # timers
         self.after(250, self._ui_tick)
@@ -318,7 +338,7 @@ class App(tk.Tk):
         ttk.Button(safe, text="Land (ramp down)", command=self.land).pack(side=tk.LEFT, padx=8)
 
     def _apply_axes_bounds(self):
-        if not self._ax3d:
+        if not self.ax3d:
             return
         try:
             bx0 = float(self.bx0.get()); bx1 = float(self.bx1.get())
@@ -327,28 +347,28 @@ class App(tk.Tk):
             if bx0 == bx1: bx1 = bx0 + 1.0
             if by0 == by1: by1 = by0 + 1.0
             if bz0 == bz1: bz1 = bz0 + 1.0
-            self._ax3d.set_xlim(min(bx0,bx1), max(bx0,bx1))
-            self._ax3d.set_ylim(min(by0,by1), max(by0,by1))
-            self._ax3d.set_zlim(min(bz0,bz1), max(bz0,bz1))
+            self.ax3d.set_xlim(min(bx0,bx1), max(bx0,bx1))
+            self.ax3d.set_ylim(min(by0,by1), max(by0,by1))
+            self.ax3d.set_zlim(min(bz0,bz1), max(bz0,bz1))
         except Exception:
             pass
 
     def _on_apply_bounds(self):
         self._apply_axes_bounds()
-        if self._canvas:
-            self._canvas.draw_idle()
+        if self.canvas3d:
+            self.canvas3d.draw_idle()
 
     def _update_view(self, *_):
-        if not self._ax3d:
+        if not self.ax3d:
             return
         az = float(self.azim_var.get())
         el = float(self.elev_var.get())
-        self._ax3d.view_init(elev=el, azim=az)
-        if self._canvas:
-            self._canvas.draw_idle()
+        self.ax3d.view_init(elev=el, azim=az)
+        if self.canvas3d:
+            self.canvas3d.draw_idle()
 
     def _draw_quiver(self, x, y, z, roll, pitch, yaw):
-        if not self._ax3d:
+        if not self.ax3d:
             return
         if self._quiver_artist is not None:
             try: self._quiver_artist.remove()
@@ -360,9 +380,9 @@ class App(tk.Tk):
         dx =  cy*cz
         dy =  cy*sz
         dz = -sy
-        length = 0.2 * max(1.0, abs(self._ax3d.get_zlim()[1]-self._ax3d.get_zlim()[0]))/5.0
+        length = 0.2 * max(1.0, abs(self.ax3d.get_zlim()[1]-self.ax3d.get_zlim()[0]))/5.0
         try:
-            self._quiver_artist = self._ax3d.quiver(x, y, z, dx, dy, dz, length=length, normalize=True)
+            self._quiver_artist = self.ax3d.quiver(x, y, z, dx, dy, dz, length=length, normalize=True)
         except Exception:
             self._quiver_artist = None
 
@@ -380,11 +400,11 @@ class App(tk.Tk):
             try: self._quiver_artist.remove()
             except Exception: pass
             self._quiver_artist = None
-        if self._canvas:
-            self._canvas.draw_idle()
+        if self.canvas3d:
+            self.canvas3d.draw_idle()
 
     def _ensure_3d_canvas(self):
-        if getattr(self, "_canvas", None):
+        if getattr(self, "canvas3d", None):
             return
         try:
             from matplotlib.figure import Figure
@@ -392,19 +412,20 @@ class App(tk.Tk):
             from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
         except Exception as e:
             if not getattr(self, "_matplotlib_error_label", None):
-                self._matplotlib_error_label = ttk.Label(self._plot_frame, text=f"3D view unavailable: {e}")
-                self._matplotlib_error_label.pack(fill="both", expand=True)
+                self._matplotlib_error_label = ttk.Label(self.plot_container, text=f"3D view unavailable: {e}")
+                self._matplotlib_error_label.grid(row=0, column=0, sticky="nsew")
             return
         self._fig = Figure(figsize=(5, 4), dpi=100)
-        self._ax3d = self._fig.add_subplot(111, projection="3d")
+        self.ax3d = self._fig.add_subplot(111, projection="3d")
         self._fig.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02)
-        self._ax3d.set_xlim(-1000, 1000)
-        self._ax3d.set_ylim(-1000, 1000)
-        self._ax3d.set_zlim(0, 1500)
-        self._canvas = FigureCanvasTkAgg(self._fig, master=self._plot_frame)
-        self._canvas.draw_idle()
-        self._canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.ax3d.set_xlim(-1000, 1000)
+        self.ax3d.set_ylim(-1000, 1000)
+        self.ax3d.set_zlim(0, 1500)
+        self.canvas3d = FigureCanvasTkAgg(self._fig, master=self.plot_container)
+        self.canvas3d.draw_idle()
+        self.canvas3d.get_tk_widget().grid(row=0, column=0, sticky="nsew")
         self._last_draw_ts = 0.0
+        self._update_view()
 
     def _on_tab_changed(self, evt):
         tab_text = self.notebook.tab(self.notebook.select(), "text") or ""
@@ -912,9 +933,9 @@ class App(tk.Tk):
         # record only selected parameters
         self._append_log_params_sample()
         # 3D Vicon plot
-        if self._canvas is None and self.right_pane.winfo_ismapped():
+        if self.canvas3d is None and self.right_box.winfo_ismapped():
             self._ensure_3d_canvas()
-        if self._canvas is None:
+        if self.canvas3d is None:
             self.after(250, self._ui_tick)
             return
         last = None
@@ -929,7 +950,7 @@ class App(tk.Tk):
             self.trail_buf.append((now, x, y, z))
             self._apply_axes_bounds()
             if self._point_artist is None:
-                self._point_artist = self._ax3d.scatter([x], [y], [z], s=12)
+                self._point_artist = self.ax3d.scatter([x], [y], [z], s=12)
             else:
                 self._point_artist._offsets3d = ([x], [y], [z])
             self._draw_quiver(x, y, z, roll=rx, pitch=ry, yaw=rz)
@@ -942,7 +963,7 @@ class App(tk.Tk):
                     ys = [p[2] for p in pts][::k]
                     zs = [p[3] for p in pts][::k]
                     if self._trail_artist is None:
-                        self._trail_artist, = self._ax3d.plot(xs, ys, zs, linewidth=1)
+                        self._trail_artist, = self.ax3d.plot(xs, ys, zs, linewidth=1)
                     else:
                         self._trail_artist.set_data(xs, ys)
                         self._trail_artist.set_3d_properties(zs)
@@ -955,7 +976,7 @@ class App(tk.Tk):
                 except Exception: pass
                 self._trail_artist = None
             if now - self._last_draw_ts >= 0.1:
-                self._canvas.draw_idle()
+                self.canvas3d.draw_idle()
                 self._last_draw_ts = now
 
         self.after(250, self._ui_tick)
