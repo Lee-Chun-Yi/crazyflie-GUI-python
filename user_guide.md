@@ -22,7 +22,8 @@ Follow these steps to get the project onto your machine:
    ```
 4. Install the project in editable mode (this creates the `cfmarslab` command):
    ```bash
-   pip install -e src
+   python -m pip install -U pip setuptools wheel
+   python -m pip install -e .
    ```
 5. Start the application:
    ```bash
