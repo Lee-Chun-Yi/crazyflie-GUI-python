@@ -24,8 +24,11 @@ class UDPInput:
 
     # --- public API ---
     def start(self):
-        if self._thread and self._thread.is_alive():
-            return
+        if self._thread:
+            if self._thread.is_alive():
+                return
+            # cleanup stale thread reference
+            self._thread = None
         self._running.set()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -33,6 +36,9 @@ class UDPInput:
 
     def stop(self):
         self._running.clear()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+            self._thread = None
 
     def set_rate(self, hz: int):
         with self._rate_lock:
