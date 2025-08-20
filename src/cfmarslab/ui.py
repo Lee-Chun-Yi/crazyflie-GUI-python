@@ -304,7 +304,7 @@ class App(tk.Tk):
         self.btn_xyz_start.pack(side=tk.LEFT)
         self.btn_xyz_stop.pack(side=tk.LEFT, padx=6)
         self.btn_use_vicon = ttk.Button(
-            row2, text="Use Vicon → XYZ", command=self._on_use_vicon, state=tk.DISABLED
+            row2, text="Current XYZ", command=self._on_use_vicon, state=tk.DISABLED
         )
         self.btn_use_vicon.pack(side=tk.LEFT, padx=6)
 
