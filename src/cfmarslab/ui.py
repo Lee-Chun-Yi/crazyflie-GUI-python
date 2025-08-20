@@ -218,6 +218,9 @@ class App(tk.Tk):
         self._vrx_sock: socket.socket | None = None
         self._vrx_lock = threading.Lock()
         self._last_vicon: tuple[float, float, float, float, float, float] | None = None
+        # latest Vicon sample (position only) and timestamp
+        self._vicon_xyz: tuple[float, float, float] | None = None
+        self._vicon_ts: float = 0.0
 
         # Build tabs
         self._build_controls_tab(tab_controls)
@@ -298,7 +301,12 @@ class App(tk.Tk):
         ttk.Spinbox(row2, from_=1, to=500, width=6, textvariable=self.xyz_hz_var).pack(side=tk.LEFT, padx=(4,12))
         self.btn_xyz_start = ttk.Button(row2, text="Start setpoints → MATLAB", command=self.start_coords)
         self.btn_xyz_stop  = ttk.Button(row2, text="Stop setpoints", state=tk.DISABLED, command=self.stop_coords)
-        self.btn_xyz_start.pack(side=tk.LEFT); self.btn_xyz_stop.pack(side=tk.LEFT, padx=6)
+        self.btn_xyz_start.pack(side=tk.LEFT)
+        self.btn_xyz_stop.pack(side=tk.LEFT, padx=6)
+        self.btn_use_vicon = ttk.Button(
+            row2, text="Use Vicon → XYZ", command=self._on_use_vicon, state=tk.DISABLED
+        )
+        self.btn_use_vicon.pack(side=tk.LEFT, padx=6)
 
         # Vicon (UDP 8889)
         vgp = ttk.Labelframe(parent, text="Vicon (UDP 8889)", padding=8)
@@ -583,6 +591,8 @@ class App(tk.Tk):
                 with self._vrx_lock:
                     self._last_vicon = (x, y, z, rx, ry, rz)
                     self.trail_buf.append((time.time(), x, y, z))
+                    self._vicon_xyz = (x, y, z)
+                    self._vicon_ts = perf_counter()
             except BlockingIOError:
                 pass
             except Exception as e:
@@ -591,6 +601,27 @@ class App(tk.Tk):
                     self.enqueue_log(f"[Vicon] decode error: {e}")
                     last_err = now
             time.sleep(period)
+
+    def _get_latest_vicon_xyz(self, max_age: float = 1.0):
+        """Return (x, y, z) tuple if last Vicon sample is fresh; else None."""
+        with self._vrx_lock:
+            xyz = self._vicon_xyz
+            ts = self._vicon_ts
+        if xyz and (perf_counter() - ts) <= max_age:
+            return xyz
+        return None
+
+    def _on_use_vicon(self):
+        vals = self._get_latest_vicon_xyz()
+        if not vals:
+            return
+        x, y, z = vals
+        try:
+            self.x_var.set(f"{x:.3f}")
+            self.y_var.set(f"{y:.3f}")
+            self.z_var.set(f"{z:.3f}")
+        except Exception:
+            pass
 
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
@@ -978,6 +1009,13 @@ class App(tk.Tk):
                 self.vrz_var.set(f"{rz:.3f}")
             except Exception:
                 pass
+
+        try:
+            fresh = self._get_latest_vicon_xyz() is not None and self._vrx_running
+            state = "normal" if fresh else "disabled"
+            self.btn_use_vicon.configure(state=state)
+        except Exception:
+            pass
 
         # telemetry heads-up
         with self.state_model.lock:
