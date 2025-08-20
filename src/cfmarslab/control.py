@@ -176,12 +176,10 @@ class _SendQueue:
                 self.queue.task_done()
 
 
-class SetpointLoop:
-    """Send RPYT to Crazyflie at a fixed (adjustable) frequency, and
-    measure the *actual* send rate averaged over ~1s windows."""
-    def __init__(self, state: SharedState, link, rate_hz: int = 100):
-        self.state = state
-        self.link = link
+class BaseLoop:
+    """Common loop functionality for rate management and timing stats."""
+
+    def __init__(self, rate_hz: int = 100):
         self._rate_hz = max(1, int(rate_hz))
         self._rate_lock = Lock()
         self._run_flag = Event()
@@ -215,7 +213,7 @@ class SetpointLoop:
         self._run_flag.set()
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
-        set_realtime_priority(self._thread.ident)  # reduce jitter; may require admin rights
+        set_realtime_priority(self._thread.ident)
 
     def stop(self):
         self._run_flag.clear()
@@ -235,7 +233,6 @@ class SetpointLoop:
             return self._rate_hz
 
     def get_actual_rate(self) -> float:
-        """Return the last computed actual send rate in Hz (1s average)."""
         return float(self._actual_rate_hz)
 
     def get_timing_snapshot(self):
@@ -259,26 +256,23 @@ class SetpointLoop:
                 self._stats_time = now
             return self._stats_cache
 
+    # --- hooks for subclasses ---
+    def _should_run(self) -> bool:
+        return self._run_flag.is_set()
+
+    def _step(self):
+        raise NotImplementedError
+
     # --- worker ---
     def _run(self):
         wait = Event()
         t_ns = perf_counter_ns()
         t_target = perf_counter()
-        while self._run_flag.is_set() and not self.state.stop_all.is_set():
+        while self._should_run():
             with self._rate_lock:
                 dt = 1.0 / float(self._rate_hz)
                 dt_ns = int(dt * 1_000_000_000)
-            with self.state.lock:
-                vbat = float(self.state.vbat or 0.0)
-                r = float(self.state.rpyth.get("roll", 0.0))
-                p = float(self.state.rpyth.get("pitch", 0.0))
-                y = float(self.state.rpyth.get("yaw", 0.0))
-                th = int(self.state.rpyth.get("thrust", 0))
-                if vbat and vbat < 3.7:
-                    r = p = y = 0.0; th = 0
-                if th <= 48000:
-                    r = p = y = 0.0
-            self._sender.enqueue(self.link.send_setpoint, r, p, y, th)
+            self._step()
             now = perf_counter()
             dt_real = now - self._last_send_time if self._last_send_time is not None else dt
             jitter_abs = abs(dt_real - dt)
@@ -290,7 +284,6 @@ class SetpointLoop:
                 if miss:
                     self._miss_count += 1
             self._last_send_time = now
-            # --- actual rate accounting ---
             self._count += 1
             elapsed = now - self._t_rate
             if elapsed >= 1.0:
@@ -307,90 +300,42 @@ class SetpointLoop:
                 wait.wait(remaining / 1e9)
 
 
-class PWMSetpointLoop:
+class SetpointLoop(BaseLoop):
+    """Send RPYT to Crazyflie at a fixed (adjustable) frequency."""
+
+    def __init__(self, state: SharedState, link, rate_hz: int = 100):
+        super().__init__(rate_hz)
+        self.state = state
+        self.link = link
+
+    def _should_run(self) -> bool:
+        return self._run_flag.is_set() and not self.state.stop_all.is_set()
+
+    def _step(self):
+        with self.state.lock:
+            vbat = float(self.state.vbat or 0.0)
+            r = float(self.state.rpyth.get("roll", 0.0))
+            p = float(self.state.rpyth.get("pitch", 0.0))
+            y = float(self.state.rpyth.get("yaw", 0.0))
+            th = int(self.state.rpyth.get("thrust", 0))
+            if vbat and vbat < 3.7:
+                r = p = y = 0.0
+                th = 0
+            if th <= 48000:
+                r = p = y = 0.0
+        self._sender.enqueue(self.link.send_setpoint, r, p, y, th)
+
+
+class PWMSetpointLoop(BaseLoop):
     """Send PWM values to Crazyflie using either manual or UDP input."""
 
     def __init__(self, link, rate_hz: int = 100):
+        super().__init__(rate_hz)
         self.link = link
-        self._rate_hz = max(1, int(rate_hz))
-        self._rate_lock = Lock()
-        self._run_flag = Event()
-        self._thread: Optional[Thread] = None
-        self._sender = _SendQueue()
         self.last_pwm = [0, 0, 0, 0]
         self._mode = "manual"
         self._manual_pwm = [0, 0, 0, 0]
         self._udp: Optional[PWMUDPReceiver] = None
-        # timing stats
-        self._jitter_buf = deque(maxlen=300)
-        self._miss_count = 0
-        self._total_count = 0
-        self._timing_lock = Lock()
-        self._last_send_time: Optional[float] = None
-        self._stats_cache = (float("nan"), float("nan"), float("nan"))
-        self._stats_time = 0.0
-        # actual rate measurement
-        self._count = 0
-        self._t_rate = perf_counter()
-        self._actual_rate_hz = 0.0
-
-    # --- public API ---
-    def start(self, rate_hz: Optional[int] = None):
-        if rate_hz is not None:
-            self.set_rate(rate_hz)
-        if self._thread and self._thread.is_alive():
-            return
-        with self._timing_lock:
-            self._jitter_buf.clear()
-            self._miss_count = 0
-            self._total_count = 0
-        self._last_send_time = None
-        self._sender.start()
-        self._run_flag.set()
-        self._thread = Thread(target=self._run, daemon=True)
-        self._thread.start()
-        set_realtime_priority(self._thread.ident)  # reduce jitter; may require admin rights
-
-    def stop(self):
-        self._run_flag.clear()
-        if self._thread:
-            self._thread.join()
-        self._sender.stop()
-
-    def is_running(self) -> bool:
-        return self._run_flag.is_set()
-
-    def set_rate(self, hz: int):
-        with self._rate_lock:
-            self._rate_hz = max(1, int(hz))
-
-    def get_rate(self) -> int:
-        with self._rate_lock:
-            return self._rate_hz
-
-    def get_actual_rate(self) -> float:
-        return float(self._actual_rate_hz)
-
-    def get_timing_snapshot(self):
-        with self._timing_lock:
-            return list(self._jitter_buf), int(self._miss_count), int(self._total_count)
-
-    def get_cached_stats(self, now: float):
-        with self._timing_lock:
-            if now - self._stats_time >= 1.0:
-                j_ms = [v * 1000.0 for v in self._jitter_buf]
-                n = len(j_ms)
-                if n >= 5:
-                    vals = sorted(j_ms)
-                    p95 = vals[int(0.95 * (n - 1))]
-                    p99 = vals[int(0.99 * (n - 1))]
-                else:
-                    p95 = float("nan")
-                    p99 = float("nan")
-                miss_pct = 100.0 * self._miss_count / self._total_count if self._total_count > 0 else float("nan")
-                self._stats_cache = (p95, p99, miss_pct)
-                self._stats_time = now
-            return self._stats_cache
 
     def set_mode(self, mode: str):
         if mode not in ("manual", "udp"):
@@ -398,7 +343,7 @@ class PWMSetpointLoop:
         self._mode = mode
 
     def set_manual_pwm(self, pwm: List[int]):
-        self._manual_pwm = [int(max(0, min(65535, v))) for v in pwm[:4]] + [0]*(4-len(pwm))
+        self._manual_pwm = [int(max(0, min(65535, v))) for v in pwm[:4]] + [0] * (4 - len(pwm))
 
     def attach_udp(self, receiver: PWMUDPReceiver):
         self._udp = receiver
@@ -414,44 +359,10 @@ class PWMSetpointLoop:
             except Exception:
                 pass
 
-    # --- worker ---
-    def _run(self):
-        wait = Event()
-        t_ns = perf_counter_ns()
-        t_target = perf_counter()
-        while self._run_flag.is_set():
-            with self._rate_lock:
-                dt = 1.0 / float(self._rate_hz)
-                dt_ns = int(dt * 1_000_000_000)
-            if self._mode == "udp" and self._udp:
-                pwm = self._udp.get_last()
-            else:
-                pwm = list(self._manual_pwm)
-            self.last_pwm[:] = pwm[:4]
-            self._sender.enqueue(self._dispatch_pwm, pwm)
-            now = perf_counter()
-            dt_real = now - self._last_send_time if self._last_send_time is not None else dt
-            jitter_abs = abs(dt_real - dt)
-            lateness = max(0.0, now - t_target)
-            miss = lateness > 0.5 * dt
-            with self._timing_lock:
-                self._jitter_buf.append(jitter_abs)
-                self._total_count += 1
-                if miss:
-                    self._miss_count += 1
-            self._last_send_time = now
-            # --- actual rate accounting ---
-            self._count += 1
-            elapsed = now - self._t_rate
-            if elapsed >= 1.0:
-                self._actual_rate_hz = self._count / elapsed
-                self._count = 0
-                self._t_rate = now
-            t_target += dt
-            t_ns += dt_ns
-            while True:
-                remaining = t_ns - perf_counter_ns()
-                if remaining <= 0:
-                    t_ns = perf_counter_ns()
-                    break
-                wait.wait(remaining / 1e9)
+    def _step(self):
+        if self._mode == "udp" and self._udp:
+            pwm = self._udp.get_last()
+        else:
+            pwm = list(self._manual_pwm)
+        self.last_pwm[:] = pwm[:4]
+        self._sender.enqueue(self._dispatch_pwm, pwm)
