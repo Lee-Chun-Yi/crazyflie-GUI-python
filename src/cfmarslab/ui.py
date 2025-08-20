@@ -1,4 +1,5 @@
 import socket, struct, threading, time, queue, logging, sys, traceback
+from time import perf_counter
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 from collections import deque
@@ -1006,7 +1007,7 @@ class App(tk.Tk):
             self.lbl_arm_state.config(text="—")
 
         # control timing KPIs and actual rates (update <=1Hz)
-        now = time.time()
+        now = perf_counter()
         if now - getattr(self, "_last_kpi_update", 0.0) >= 1.0:
             try:
                 loop = None
