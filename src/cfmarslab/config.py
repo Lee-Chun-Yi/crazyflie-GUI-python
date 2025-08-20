@@ -26,6 +26,13 @@ class Controls:
     )
     PLATFORM_HINT: str | None = None  # "bolt" / None
 
+
+@dataclass(frozen=True)
+class RT:
+    FIFO_PRIORITY: int = 50    # Linux only
+    SPIN_NS: int = 150_000     # busy-wait window (nanoseconds)
+    PIN_CPU: int | None = None # set e.g. 2 to bind to core 2
+
 @dataclass
 class AppConfig:
     recent_uris: list[str]
