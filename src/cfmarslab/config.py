@@ -33,6 +33,13 @@ class RT:
     SPIN_NS: int = 150_000     # busy-wait window (nanoseconds)
     PIN_CPU: int | None = None # set e.g. 2 to bind to core 2
 
+@dataclass(frozen=True)
+class Vicon:
+    PORT: int = 8889
+    # Preferred format; thread will still auto-fallback by packet length:
+    PREFERRED: str = ">6d"     # big-endian 6 doubles
+    # Valid alternatives: ">6f"
+
 @dataclass
 class AppConfig:
     recent_uris: list[str]
