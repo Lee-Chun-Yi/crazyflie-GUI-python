@@ -4,7 +4,7 @@ import time
 import pytest
 
 from cfmarslab.vicon import ViconUDP51001
-from cfmarslab.ui import decode_vicon_data_matlab
+from cfmarslab.ui import decode_pose_be_doubles
 
 
 def test_vicon_udp_receives_packet(tmp_path):
@@ -34,14 +34,14 @@ def test_vicon_udp_receives_packet(tmp_path):
         assert abs(r - v) < 1e-5
 
 
-def test_decode_vicon_data_matlab():
+def test_decode_pose_be_doubles():
     vals = (1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
-    data = struct.pack(">6f", *vals)
-    res = decode_vicon_data_matlab(data)
+    data = struct.pack(">6d", *vals)
+    res = decode_pose_be_doubles(data)
     for r, v in zip(res, vals):
-        assert abs(r - v) < 1e-6
-    res = decode_vicon_data_matlab(data + b"extra")
+        assert abs(r - v) < 1e-9
+    res = decode_pose_be_doubles(data + b"extra")
     for r, v in zip(res, vals):
-        assert abs(r - v) < 1e-6
+        assert abs(r - v) < 1e-9
     with pytest.raises(ValueError):
-        decode_vicon_data_matlab(b"\x00" * 10)
+        decode_pose_be_doubles(b"\x00" * 10)

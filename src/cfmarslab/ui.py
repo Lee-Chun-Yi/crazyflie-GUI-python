@@ -13,17 +13,19 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .link import LinkManager
 
-def decode_vicon_data_matlab(payload: bytes):
-    """
-    Expect 6 float32 in big-endian order: >6f.
-    Return tuple: (x, y, z, rx, ry, rz) as Python floats.
-    If payload is longer than 24 bytes, only use the first 24 bytes.
-    Raise ValueError on insufficient length or struct error.
-    """
-    import struct as _struct
+def decode_pose_be_doubles(payload: bytes):
+    """Decode 6 big-endian doubles representing x,y,z,rx,ry,rz."""
+    if len(payload) < 48:
+        raise ValueError(f"short packet: {len(payload)} bytes")
+    x, y, z, rx, ry, rz = struct.unpack(">6d", payload[:48])
+    return float(x), float(y), float(z), float(rx), float(ry), float(rz)
+
+
+def decode_pose_le_floats(payload: bytes):
+    """Fallback decoder for legacy little-endian float32 packets."""
     if len(payload) < 24:
         raise ValueError(f"short packet: {len(payload)} bytes")
-    x, y, z, rx, ry, rz = _struct.unpack(">6f", payload[:24])
+    x, y, z, rx, ry, rz = struct.unpack("<6f", payload[:24])
     return float(x), float(y), float(z), float(rx), float(ry), float(rz)
 
 UDP_COORD_PORT = 51002
@@ -40,17 +42,30 @@ def listen_port_8889(rate_hz: int = 30) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", 8889))
     sock.setblocking(False)
-
     period = 1.0 / max(1, rate_hz)
     vicon_running.set()
+    first = True
+    decoder = decode_pose_be_doubles
     while vicon_running.is_set():
         try:
             data, _ = sock.recvfrom(1024)
-            if len(data) == 24:
-                vals = struct.unpack("<6f", data)
-                with lock:
-                    vicon_data = vals
+            if first:
+                print(f"[Vicon] 8889 first packet len={len(data)} bytes")
+                first = False
+            try:
+                vals = decoder(data)
+            except ValueError as e:
+                if decoder is decode_pose_be_doubles and len(data) == 24:
+                    print("[Vicon] using <6f decoder fallback")
+                    decoder = decode_pose_le_floats
+                    vals = decoder(data)
+                else:
+                    raise
+            with lock:
+                vicon_data = vals
         except BlockingIOError:
+            pass
+        except ValueError:
             pass
         except OSError:
             break
@@ -584,10 +599,23 @@ class App(tk.Tk):
         sock = self._vrx_sock
         period = 1.0 / max(1, hz)
         last_err = 0.0
+        first = True
+        decoder = decode_pose_be_doubles
         while self._vrx_running and sock:
             try:
                 data, _ = sock.recvfrom(2048)
-                x, y, z, rx, ry, rz = decode_vicon_data_matlab(data)
+                if first:
+                    self.enqueue_log(f"[Vicon] 8889 first packet len={len(data)} bytes")
+                    first = False
+                try:
+                    x, y, z, rx, ry, rz = decoder(data)
+                except ValueError as e:
+                    if decoder is decode_pose_be_doubles and len(data) == 24:
+                        self.enqueue_log("[Vicon] using <6f decoder fallback")
+                        decoder = decode_pose_le_floats
+                        x, y, z, rx, ry, rz = decoder(data)
+                    else:
+                        raise
                 with self._vrx_lock:
                     self._last_vicon = (x, y, z, rx, ry, rz)
                     self.trail_buf.append((time.time(), x, y, z))
@@ -595,10 +623,15 @@ class App(tk.Tk):
                     self._vicon_ts = perf_counter()
             except BlockingIOError:
                 pass
-            except Exception as e:
+            except ValueError as e:
                 now = time.time()
                 if now - last_err >= 1.0:
                     self.enqueue_log(f"[Vicon] decode error: {e}")
+                    last_err = now
+            except Exception as e:
+                now = time.time()
+                if now - last_err >= 1.0:
+                    self.enqueue_log(f"[Vicon] rx error: {e}")
                     last_err = now
             time.sleep(period)
 
