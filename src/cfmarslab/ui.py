@@ -13,80 +13,28 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .link import LinkManager
 
+def decode_vicon_be(payload: bytes):
+    """Decode big-endian Vicon packets.
+    - 48 bytes -> '>6d' (x,y,z,rx,ry,rz) as doubles
+    - 24 bytes -> '>6f' (x,y,z,rx,ry,rz) as float32
+    Raises ValueError for other sizes.
+    """
+    n = len(payload)
+    if n >= 48:
+        x, y, z, rx, ry, rz = struct.unpack(">6d", payload[:48])
+        return float(x), float(y), float(z), float(rx), float(ry), float(rz), ">6d"
+    if n == 24:
+        x, y, z, rx, ry, rz = struct.unpack(">6f", payload[:24])
+        return float(x), float(y), float(z), float(rx), float(ry), float(rz), ">6f"
+    raise ValueError(f"unexpected packet size: {n} bytes")
+
 def decode_pose_be_doubles(payload: bytes):
-    """Decode 6 big-endian doubles representing x,y,z,rx,ry,rz."""
-    if len(payload) < 48:
-        raise ValueError(f"short packet: {len(payload)} bytes")
-    x, y, z, rx, ry, rz = struct.unpack(">6d", payload[:48])
-    return float(x), float(y), float(z), float(rx), float(ry), float(rz)
-
-
-def decode_pose_le_floats(payload: bytes):
-    """Fallback decoder for legacy little-endian float32 packets."""
-    if len(payload) < 24:
-        raise ValueError(f"short packet: {len(payload)} bytes")
-    x, y, z, rx, ry, rz = struct.unpack("<6f", payload[:24])
-    return float(x), float(y), float(z), float(rx), float(ry), float(rz)
+    """Backward compatible wrapper returning only pose."""
+    x, y, z, rx, ry, rz, _ = decode_vicon_be(payload)
+    return x, y, z, rx, ry, rz
 
 UDP_COORD_PORT = 51002
 RADIO_BITRATES = ("2M", "1M", "250K")
-
-vicon_data: tuple[float, float, float, float, float, float] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-vicon_thread: threading.Thread | None = None
-vicon_running = threading.Event()
-lock = threading.Lock()
-
-
-def listen_port_8889(rate_hz: int = 30) -> None:
-    global vicon_data
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("127.0.0.1", 8889))
-    sock.setblocking(False)
-    period = 1.0 / max(1, rate_hz)
-    vicon_running.set()
-    first = True
-    decoder = decode_pose_be_doubles
-    while vicon_running.is_set():
-        try:
-            data, _ = sock.recvfrom(1024)
-            if first:
-                print(f"[Vicon] 8889 first packet len={len(data)} bytes")
-                first = False
-            try:
-                vals = decoder(data)
-            except ValueError as e:
-                if decoder is decode_pose_be_doubles and len(data) == 24:
-                    print("[Vicon] using <6f decoder fallback")
-                    decoder = decode_pose_le_floats
-                    vals = decoder(data)
-                else:
-                    raise
-            with lock:
-                vicon_data = vals
-        except BlockingIOError:
-            pass
-        except ValueError:
-            pass
-        except OSError:
-            break
-        time.sleep(period)
-    sock.close()
-
-
-def start_vicon_listener(rate_hz: int = 30) -> None:
-    global vicon_thread
-    if vicon_thread and vicon_thread.is_alive():
-        return
-    vicon_thread = threading.Thread(
-        target=listen_port_8889, args=(rate_hz,), daemon=True
-    )
-    vicon_thread.start()
-
-
-def stop_vicon_listener() -> None:
-    vicon_running.clear()
-    if vicon_thread:
-        vicon_thread.join(timeout=1.0)
 
 class App(tk.Tk):
     def __init__(self):
@@ -235,6 +183,7 @@ class App(tk.Tk):
         self._last_vicon: tuple[float, float, float, float, float, float] | None = None
         # latest Vicon sample (position only) and timestamp
         self._vicon_xyz: tuple[float, float, float] | None = None
+        self._vicon_rpy: tuple[float, float, float] | None = None
         self._vicon_ts: float = 0.0
 
         # Build tabs
@@ -289,6 +238,13 @@ class App(tk.Tk):
     def log(self, s: str):
         self.console.configure(state='normal'); self.console.insert('end', s + '\n')
         self.console.configure(state='disabled'); self.console.see('end')
+
+    def _log(self, s: str):
+        """Thread-safe logger used by background threads."""
+        try:
+            self.enqueue_log(s)
+        except Exception:
+            pass
 
     def _is_4pid_mode_active(self) -> bool:
         """Return True iff the 4-PID Controls tab is selected."""
@@ -539,6 +495,12 @@ class App(tk.Tk):
         except Exception:
             return default
 
+    def _now(self) -> float:
+        return perf_counter()
+
+    def _sleep(self, t: float) -> None:
+        time.sleep(t)
+
     def _vrx_start(self):
         sock = None
         try:
@@ -549,16 +511,18 @@ class App(tk.Tk):
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.bind(("127.0.0.1", 8889))
             sock.setblocking(False)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            except Exception:
+                pass
             self._vrx_sock = sock
             self._vrx_running = True
-            self._vrx_thread = threading.Thread(
-                target=self._vrx_loop, args=(hz,), daemon=True
-            )
+            self._vrx_thread = threading.Thread(target=self._vrx_loop, args=(hz,), daemon=True)
             self._vrx_thread.start()
             self.btn_vrx_start.configure(state=tk.DISABLED)
             self.btn_vrx_stop.configure(state=tk.NORMAL)
             self.vrx_rate_entry.configure(state=tk.DISABLED)
-            self.log("Vicon UDP receive started")
+            self._log("Vicon UDP receive started")
         except Exception as e:
             try:
                 if sock:
@@ -567,7 +531,7 @@ class App(tk.Tk):
                 pass
             self._vrx_running = False
             self.vrx_rate_entry.configure(state=tk.NORMAL)
-            self.log(f"Vicon receive start failed: {e}")
+            self._log(f"Vicon receive start failed: {e}")
 
     def _vrx_stop(self):
         try:
@@ -591,56 +555,54 @@ class App(tk.Tk):
             self.btn_vrx_start.configure(state=tk.NORMAL)
             self.btn_vrx_stop.configure(state=tk.DISABLED)
             self.vrx_rate_entry.configure(state=tk.NORMAL)
-            self.log("Vicon UDP receive stopped")
+            self._log("Vicon UDP receive stopped")
         except Exception as e:
-            self.log(f"Vicon receive stop failed: {e}")
+            self._log(f"Vicon receive stop failed: {e}")
 
     def _vrx_loop(self, hz: int):
         sock = self._vrx_sock
         period = 1.0 / max(1, hz)
         last_err = 0.0
-        first = True
-        decoder = decode_pose_be_doubles
+        fmt_once = None
+        self._log("[Vicon] 8889 listener started")
         while self._vrx_running and sock:
             try:
-                data, _ = sock.recvfrom(2048)
-                if first:
-                    self.enqueue_log(f"[Vicon] 8889 first packet len={len(data)} bytes")
-                    first = False
-                try:
-                    x, y, z, rx, ry, rz = decoder(data)
-                except ValueError as e:
-                    if decoder is decode_pose_be_doubles and len(data) == 24:
-                        self.enqueue_log("[Vicon] using <6f decoder fallback")
-                        decoder = decode_pose_le_floats
-                        x, y, z, rx, ry, rz = decoder(data)
-                    else:
-                        raise
-                with self._vrx_lock:
-                    self._last_vicon = (x, y, z, rx, ry, rz)
-                    self.trail_buf.append((time.time(), x, y, z))
-                    self._vicon_xyz = (x, y, z)
-                    self._vicon_ts = perf_counter()
+                while True:
+                    data, _ = sock.recvfrom(2048)
+                    x, y, z, rx, ry, rz, fmt = decode_vicon_be(data)
+                    if fmt_once is None:
+                        fmt_once = fmt
+                        self._log(f"[Vicon] 8889 first packet len={len(data)} bytes, fmt={fmt_once}")
+                    with self._vrx_lock:
+                        self._last_vicon = (x, y, z, rx, ry, rz)
+                        self.trail_buf.append((time.time(), x, y, z))
+                        self._vicon_xyz = (x, y, z)
+                        self._vicon_rpy = (rx, ry, rz)
+                        self._vicon_ts = self._now()
             except BlockingIOError:
                 pass
-            except ValueError as e:
-                now = time.time()
-                if now - last_err >= 1.0:
-                    self.enqueue_log(f"[Vicon] decode error: {e}")
-                    last_err = now
+            except OSError:
+                break
             except Exception as e:
                 now = time.time()
                 if now - last_err >= 1.0:
-                    self.enqueue_log(f"[Vicon] rx error: {e}")
+                    self._log(f"[Vicon] decode error: {e}")
                     last_err = now
-            time.sleep(period)
+            self._sleep(period)
+
+        try:
+            if sock:
+                sock.close()
+        except Exception:
+            pass
+        self._log("[Vicon] 8889 listener stopped")
 
     def _get_latest_vicon_xyz(self, max_age: float = 1.0):
         """Return (x, y, z) tuple if last Vicon sample is fresh; else None."""
         with self._vrx_lock:
             xyz = self._vicon_xyz
             ts = self._vicon_ts
-        if xyz and (perf_counter() - ts) <= max_age:
+        if xyz and (self._now() - ts) <= max_age:
             return xyz
         return None
 
@@ -1044,7 +1006,7 @@ class App(tk.Tk):
                 pass
 
         try:
-            fresh = self._get_latest_vicon_xyz() is not None and self._vrx_running
+            fresh = self._vrx_running and (self._now() - self._vicon_ts) <= 1.0
             state = "normal" if fresh else "disabled"
             self.btn_use_vicon.configure(state=state)
         except Exception:
