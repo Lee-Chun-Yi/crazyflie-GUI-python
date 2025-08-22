@@ -1012,10 +1012,7 @@ class App(tk.Tk):
         threading.Thread(target=_ramp_4pid if self._is_4pid_mode_active() else _ramp_2pid, daemon=True).start()
 
     def _on_restart(self):
-        import threading
-
-        t = threading.Thread(target=self._restart_worker, daemon=True)
-        t.start()
+        threading.Thread(target=self._restart_worker, daemon=True).start()
 
     def _status(self, msg: str):
         try:
@@ -1030,7 +1027,6 @@ class App(tk.Tk):
         return self._rebuild_uri()
 
     def _restart_worker(self):
-        import time, sys
         from cflib.utils.power_switch import PowerSwitch
 
         try:
@@ -1063,7 +1059,7 @@ class App(tk.Tk):
                 pass
 
             # 3) Auto-reconnect if enabled
-            if getattr(self.cfg, "auto_reconnect", True):
+            if self.cfg.auto_reconnect:
                 self._status("Reconnecting…")
                 try:
                     self.on_connect()
