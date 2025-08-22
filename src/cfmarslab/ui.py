@@ -331,12 +331,16 @@ class App(tk.Tk):
         ttk.Label(optrow, text="Decimate").pack(side=tk.LEFT, padx=(12,4))
         ttk.Combobox(optrow, width=4, state="readonly", values=["1","2","5","10"], textvariable=self.decimate_var).pack(side=tk.LEFT)
 
-        # Arm toggle and state label
+        # Arm toggle, restart and state labels
         armrow = ttk.Frame(parent)
         self.btn_arm = ttk.Button(armrow, text="Arm", command=self._on_arm_toggle, state=tk.DISABLED)
         self.btn_arm.pack(side=tk.LEFT)
         self.lbl_arm_state = ttk.Label(armrow, text="—", foreground="gray")
         self.lbl_arm_state.pack(side=tk.LEFT, padx=(6,0))
+        self.btn_restart = ttk.Button(armrow, text="Restart", command=self._on_restart)
+        self.btn_restart.pack(side=tk.LEFT, padx=(6,0))
+        self.lbl_restart = ttk.Label(armrow, text="—", foreground="gray")
+        self.lbl_restart.pack(side=tk.LEFT, padx=(6,0))
         armrow.pack(anchor=tk.W, pady=(8,0))
 
         # 控制模式分頁（2-PID / 4-PID）
@@ -734,6 +738,45 @@ class App(tk.Tk):
         except Exception as e:
             self.log(f"Disconnect error: {e}")
 
+    def _refresh_control_states(self) -> None:
+        if self.link:
+            self.btn_conn.config(state=tk.DISABLED)
+            self.btn_disc.config(state=tk.NORMAL)
+            self.btn_arm.config(state=tk.NORMAL if self.link.arm_param else tk.DISABLED)
+        else:
+            self.btn_conn.config(state=tk.NORMAL)
+            self.btn_disc.config(state=tk.DISABLED)
+            self.btn_arm.config(state=tk.DISABLED)
+        self.btn_restart.config(state=tk.NORMAL)
+        self.btn_scan.config(state=tk.NORMAL)
+        self.btn_sp_start.config(state=tk.NORMAL)
+        self.btn_sp_stop.config(state=tk.DISABLED)
+        self.btn_pwm_start.config(state=tk.NORMAL)
+        self.btn_pwm_stop.config(state=tk.DISABLED)
+        self.btn_xyz_start.config(state=tk.NORMAL)
+        self.btn_xyz_stop.config(state=tk.DISABLED)
+
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        widgets = [
+            self.btn_arm,
+            self.btn_restart,
+            self.btn_conn,
+            self.btn_disc,
+            self.btn_scan,
+            self.btn_sp_start,
+            self.btn_sp_stop,
+            self.btn_pwm_start,
+            self.btn_pwm_stop,
+            self.btn_xyz_start,
+            self.btn_xyz_stop,
+        ]
+        if not enabled:
+            for w in widgets:
+                try: w.config(state=tk.DISABLED)
+                except Exception: pass
+        else:
+            self._refresh_control_states()
+
     # ---- XYZ → MATLAB ----
     def start_coords(self):
         if self._coords_running: return
@@ -962,6 +1005,69 @@ class App(tk.Tk):
                 self.log(f"Land error: {e}")
 
         threading.Thread(target=_ramp_4pid if self._is_4pid_mode_active() else _ramp_2pid, daemon=True).start()
+
+    def _on_restart(self):
+        def worker():
+            self.lbl_restart.config(text="Restarting…")
+            self._set_controls_enabled(False)
+            try:
+                try:
+                    if (self.setpoints and self.setpoints.is_running()) or (
+                        self.pwm_loop and self.pwm_loop.is_running()
+                    ):
+                        self.lbl_restart.config(text="Landing…")
+                        self.land()
+                        time.sleep(3)
+                except Exception as e:
+                    self.log(f"Restart land error: {e}")
+
+                try:
+                    if self.link:
+                        self.lbl_restart.config(text="Disconnecting…")
+                        self.on_disconnect()
+                        self._set_controls_enabled(False)
+                except Exception as e:
+                    self.log(f"Restart disconnect error: {e}")
+
+                uri = (self.uri_var.get() or "").strip()
+                try:
+                    if uri:
+                        self.lbl_restart.config(text="Powering down…")
+                        from cflib.utils.power_switch import PowerSwitch
+
+                        ps = PowerSwitch(uri)
+                        ps.stm_power_down()
+                        time.sleep(3)
+                        self.lbl_restart.config(text="Powering up…")
+                        ps.stm_power_up()
+                        time.sleep(3)
+                except Exception as e:
+                    self.log(f"Power cycle error: {e}")
+
+                try:
+                    self.lbl_restart.config(text="Clearing ports…")
+                    from .utils import clear_udp_ports_windows
+
+                    clear_udp_ports_windows([8888, 8889])
+                except Exception:
+                    pass
+
+                if self.cfg.auto_reconnect:
+                    try:
+                        self.lbl_restart.config(text="Reconnecting…")
+                        self.on_connect()
+                        self._set_controls_enabled(False)
+                        self.lbl_restart.config(text="Restart complete")
+                    except Exception as e:
+                        self.log(f"Reconnect error: {e}")
+                        self.lbl_restart.config(text="Restart done (not connected)")
+                else:
+                    self.lbl_restart.config(text="Restart done")
+            finally:
+                self._set_controls_enabled(True)
+                self.after(2000, lambda: self.lbl_restart.config(text="—"))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ---- logging of selected params ----
     def _append_log_params_sample(self):
