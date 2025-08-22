@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Utility helpers for cfmarslab."""
 
-import os
+import os, sys, time, subprocess
 from typing import Optional
 
 try:  # psutil is optional
@@ -51,4 +51,34 @@ def set_realtime_priority(thread_id: Optional[int]) -> None:
     except Exception:
         # Any failure is swallowed: this is best-effort only
         pass
+
+
+def clear_udp_ports_windows(ports: list[int]) -> None:
+    """Best-effort clearing of stuck UDP ports on Windows."""
+    if not sys.platform.startswith("win"):
+        return
+    for port in ports:
+        try:
+            out = subprocess.check_output(
+                f'netstat -ano | findstr :{port}',
+                shell=True,
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            continue
+        for line in out.splitlines():
+            parts = line.split()
+            if parts and parts[-1].isdigit():
+                pid = parts[-1]
+                try:
+                    subprocess.run(
+                        f'taskkill /PID {pid} /F',
+                        shell=True,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
 
