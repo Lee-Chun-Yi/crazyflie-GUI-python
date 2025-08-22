@@ -1,7 +1,7 @@
 import socket, struct, threading, time, queue, logging, sys, traceback
 from time import perf_counter
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, messagebox
 from collections import deque
 import math
 
@@ -1042,33 +1042,25 @@ class App(tk.Tk):
             try:
                 ps = PowerSwitch(uri)
                 ps.stm_power_down()
-                time.sleep(3.0)
+                time.sleep(2.0)
                 self._status("Powering up…")
                 ps.stm_power_up()
-                time.sleep(3.0)
+                time.sleep(2.0)
             except Exception as e:
                 self.enqueue_log(f"[restart] PowerSwitch error: {e}")
 
-            # 2) Optional: clear UDP ports (Windows only)
+            # 2) Auto-reconnect using current URI
+            self._status("Reconnecting…")
             try:
-                if sys.platform.startswith("win"):
-                    from .utils import clear_udp_ports_windows
-
-                    clear_udp_ports_windows([8888, 8889])
-            except Exception:
-                pass
-
-            # 3) Auto-reconnect if enabled
-            if self.cfg.auto_reconnect:
-                self._status("Reconnecting…")
+                self.on_connect()
+                self._status("Restart complete")
+            except Exception as e:
+                self._status("Restart done (not connected)")
+                self.enqueue_log(f"[restart] reconnect failed: {e}")
                 try:
-                    self.on_connect()
-                    self._status("Restart complete")
-                except Exception as e:
-                    self._status("Restart done (not connected)")
-                    self.enqueue_log(f"[restart] reconnect failed: {e}")
-            else:
-                self._status("Restart done")
+                    messagebox.showwarning("Reconnect failed", str(e))
+                except Exception:
+                    pass
         finally:
             time.sleep(2.0)
             self._status("—")
