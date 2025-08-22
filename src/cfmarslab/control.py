@@ -94,17 +94,17 @@ class UDPInput:
 
 
 class PWMUDPReceiver:
-    """Background UDP listener for 4 PWM values (m1–m4).
-
-    Accepts either little-endian floats (``<4f``) or uint16 (``<4H``) and
-    keeps the last successfully received set. Designed to be lightweight and
-    non-blocking so it can be polled from another thread."""
+    """Background UDP listener for 4 PWM values (m1–m4) as little-endian <4H> (8 bytes).
+    Atomic update: self._last is replaced ONLY when a full, valid 8-byte packet is parsed.
+    """
 
     def __init__(self, port: int = 8888):
         self.port = port
         self._running = Event()
         self._thread: Optional[Thread] = None
-        self._last = [0, 0, 0, 0]
+        self._last: List[int] = [0, 0, 0, 0]
+        self._packets_ok = 0
+        self._packets_bad = 0
 
     # --- public API ---
     def start(self):
@@ -120,32 +120,50 @@ class PWMUDPReceiver:
     def get_last(self) -> List[int]:
         return list(self._last)
 
-    # --- worker ---
+    def get_stats(self) -> dict:
+        return {"packets_ok": self._packets_ok, "packets_bad": self._packets_bad}
+
+    # --- internals ---
+    @staticmethod
+    def _clamp_u16(v: int) -> int:
+        return 0 if v < 0 else (65535 if v > 65535 else v)
+
     def _run(self):
+        import socket, struct
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("127.0.0.1", self.port))
+        try:
+            sock.bind(("127.0.0.1", self.port))  # keep current behavior
+        except Exception:
+            sock.bind(("", self.port))
         sock.settimeout(0.2)
+
         while self._running.is_set():
             try:
                 data, _ = sock.recvfrom(1024)
             except socket.timeout:
                 continue
             except Exception:
+                self._packets_bad += 1
                 continue
-            if len(data) != 16:
+
+            # Expect exactly 8 bytes: <4H> little-endian
+            if len(data) != 8:
+                self._packets_bad += 1
                 continue
-            vals: List[int] = []
+
             try:
-                floats = struct.unpack("<4f", data)
-                vals = [int(max(0, min(65535, v))) for v in floats]
-            except Exception:
-                try:
-                    ushorts = struct.unpack("<4H", data)
-                    vals = [int(max(0, min(65535, v))) for v in ushorts]
-                except Exception:
-                    continue
-            if vals:
-                self._last = vals
+                m1, m2, m3, m4 = struct.unpack("<4H", data)
+                vals = [self._clamp_u16(int(m1)),
+                        self._clamp_u16(int(m2)),
+                        self._clamp_u16(int(m3)),
+                        self._clamp_u16(int(m4))]
+            except struct.error:
+                self._packets_bad += 1
+                continue
+
+            # Atomic update on successful parse only
+            self._last = vals
+            self._packets_ok += 1
 
 
 class _SendQueue:
