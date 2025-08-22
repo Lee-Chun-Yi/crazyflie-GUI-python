@@ -355,22 +355,27 @@ class App(tk.Tk):
         # --- 2-PID tab (RPYT setpoints) ---
         fc = ttk.Labelframe(tab2, text="Flight Control", padding=8)
         fc.pack(fill=tk.X)
-        self.btn_sp_start = ttk.Button(fc, text="Start", command=self._sp_start)
-        self.btn_sp_stop  = ttk.Button(fc, text="Stop",  command=self._sp_stop, state=tk.DISABLED)
+        row1 = ttk.Frame(fc)
+        row1.pack(fill=tk.X)
+        self.btn_sp_start = ttk.Button(row1, text="Start", command=self._sp_start)
+        self.btn_sp_stop  = ttk.Button(row1, text="Stop",  command=self._sp_stop, state=tk.DISABLED)
         self.btn_sp_start.pack(side=tk.LEFT)
         self.btn_sp_stop.pack(side=tk.LEFT, padx=(6,12))
         self.sp_hz_var = tk.IntVar(value=100)
-        ttk.Label(fc, text="Rate (Hz)").pack(side=tk.LEFT)
-        ttk.Spinbox(fc, from_=1, to=1000, width=6, textvariable=self.sp_hz_var).pack(side=tk.LEFT, padx=(4,0))
-        self.lbl_sp_actual = ttk.Label(fc, text="Actual: -- Hz")
+        ttk.Label(row1, text="Rate (Hz)").pack(side=tk.LEFT)
+        ttk.Spinbox(row1, from_=1, to=1000, width=6, textvariable=self.sp_hz_var).pack(side=tk.LEFT, padx=(4,0))
+        self.lbl_sp_actual = ttk.Label(row1, text="Actual: -- Hz")
         self.lbl_sp_actual.pack(side=tk.LEFT, padx=(12,0))
 
-        self.lbl_rpyt = ttk.Label(fc, text="R: 0.00°  P: 0.00°  Y: 0.00°/s  T: 0")
-        self.lbl_rpyt.pack(side=tk.LEFT, padx=(12,0))
-        ttk.Label(fc, text="Throttle offset").pack(side=tk.LEFT, padx=(12,0))
+        row2 = ttk.Frame(fc)
+        row2.pack(fill=tk.X, pady=(4,0))
+        self.lbl_rpyt = ttk.Label(row2, text="R: 0.00°  P: 0.00°  Y: 0.00°/s  T: 0", font=("TkFixedFont",))
+        self.lbl_rpyt.pack(side=tk.LEFT)
+        ttk.Label(row2, text="Throttle offset").pack(side=tk.LEFT, padx=(12,0))
         self.offset_var = tk.StringVar(value=str(self.cfg.throttle_offset))
-        ttk.Spinbox(fc, from_=0, to=65535, width=8,
-                    textvariable=self.offset_var).pack(side=tk.LEFT, padx=(4,0))
+        self.offset_spin = ttk.Spinbox(row2, from_=0, to=65535, width=8,
+                                       textvariable=self.offset_var)
+        self.offset_spin.pack(side=tk.LEFT, padx=(4,0))
         self.offset_var.trace_add("write", self._on_offset_change)
 
         # --- 4-PID tab (PWM direct) ---
