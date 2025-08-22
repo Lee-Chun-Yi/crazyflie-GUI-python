@@ -38,6 +38,7 @@ def test_save_and_load_config(tmp_path, monkeypatch):
     assert json.loads(config_path.read_text(encoding="utf-8")) == {
         "recent_uris": ["radio://1/1/2M/test"],
         "auto_reconnect": False,
+        "throttle_offset": 40000,
     }
 
     # Loading should return the same configuration

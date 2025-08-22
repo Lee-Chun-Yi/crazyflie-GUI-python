@@ -67,7 +67,11 @@ class UDPInput:
                         r = max(-5.0, min(5.0, float(r)))
                         p = max(-5.0, min(5.0, float(p)))
                         y = max(-360.0, min(360.0, float(y)))
-                        th = max(0, min(20000, int(thr_f))) + 40000
+                        th_raw = max(0, min(20000, int(thr_f)))
+                        with self.state.lock:
+                            offset = int(getattr(self.state, "throttle_offset", 40000))
+                        th = th_raw + offset
+                        th = max(0, min(65535, th))
                         with self.state.lock:
                             self.state.rpyth.update({
                                 "roll": r, "pitch": p, "yaw": y, "thrust": th

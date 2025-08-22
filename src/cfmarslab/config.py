@@ -44,12 +44,14 @@ class Vicon:
 class AppConfig:
     recent_uris: list[str]
     auto_reconnect: bool
+    throttle_offset: int = 40000
 
     @staticmethod
     def default() -> "AppConfig":
         return AppConfig(
             recent_uris=["radio://0/99/2M/E7E7E7E7E7"],
             auto_reconnect=True,
+            throttle_offset=40000,
         )
 
 def load_config() -> AppConfig:
@@ -60,6 +62,7 @@ def load_config() -> AppConfig:
             return AppConfig(
                 recent_uris=list(data.get("recent_uris", [])) or AppConfig.default().recent_uris,
                 auto_reconnect=bool(data.get("auto_reconnect", True)),
+                throttle_offset=int(data.get("throttle_offset", 40000)),
             )
     except Exception:
         pass
