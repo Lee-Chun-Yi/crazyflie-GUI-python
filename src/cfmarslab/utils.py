@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Utility helpers for cfmarslab."""
 
-import os, sys, time, subprocess
+import os
 from typing import Optional
 
 try:  # psutil is optional
@@ -53,8 +53,10 @@ def set_realtime_priority(thread_id: Optional[int]) -> None:
         pass
 
 
-def clear_udp_ports_windows(ports: list[int]) -> None:
-    """Best-effort clearing of stuck UDP ports on Windows."""
+def clear_udp_ports_windows(ports):
+    """Best-effort: terminate processes holding given UDP/TCP ports on Windows."""
+    import sys, subprocess
+
     if not sys.platform.startswith("win"):
         return
     for port in ports:
