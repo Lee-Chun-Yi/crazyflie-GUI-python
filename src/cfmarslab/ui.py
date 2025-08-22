@@ -339,7 +339,7 @@ class App(tk.Tk):
         self.lbl_arm_state.pack(side=tk.LEFT, padx=(6,0))
         self.btn_restart = ttk.Button(armrow, text="Restart", command=self._on_restart)
         self.btn_restart.pack(side=tk.LEFT, padx=(6,0))
-        self.lbl_restart = ttk.Label(armrow, text="—", foreground="gray")
+        self.lbl_restart = ttk.Label(armrow, text="—")
         self.lbl_restart.pack(side=tk.LEFT, padx=(6,0))
         armrow.pack(anchor=tk.W, pady=(8,0))
 
@@ -1012,67 +1012,74 @@ class App(tk.Tk):
         threading.Thread(target=_ramp_4pid if self._is_4pid_mode_active() else _ramp_2pid, daemon=True).start()
 
     def _on_restart(self):
-        def worker():
-            self.lbl_restart.config(text="Restarting…")
-            self._set_controls_enabled(False)
+        import threading
+
+        t = threading.Thread(target=self._restart_worker, daemon=True)
+        t.start()
+
+    def _status(self, msg: str):
+        try:
+            self.lbl_restart.configure(text=msg)
+            self.lbl_restart.update_idletasks()
+        except Exception:
+            pass
+
+    def _current_uri(self) -> str:
+        if getattr(self, "uri_var", None) and self.uri_var.get():
+            return self.uri_var.get()
+        return self._rebuild_uri()
+
+    def _restart_worker(self):
+        import time, sys
+        from cflib.utils.power_switch import PowerSwitch
+
+        try:
+            self.btn_restart.configure(state="disabled")
+        except Exception:
+            pass
+
+        try:
+            uri = str(self._current_uri())
+
+            # 1) Power-cycle via PowerSwitch
+            self._status("Powering down…")
             try:
-                try:
-                    if (self.setpoints and self.setpoints.is_running()) or (
-                        self.pwm_loop and self.pwm_loop.is_running()
-                    ):
-                        self.lbl_restart.config(text="Landing…")
-                        self.land()
-                        time.sleep(3)
-                except Exception as e:
-                    self.log(f"Restart land error: {e}")
+                ps = PowerSwitch(uri)
+                ps.stm_power_down()
+                time.sleep(3.0)
+                self._status("Powering up…")
+                ps.stm_power_up()
+                time.sleep(3.0)
+            except Exception as e:
+                self.enqueue_log(f"[restart] PowerSwitch error: {e}")
 
-                try:
-                    if self.link:
-                        self.lbl_restart.config(text="Disconnecting…")
-                        self.on_disconnect()
-                        self._set_controls_enabled(False)
-                except Exception as e:
-                    self.log(f"Restart disconnect error: {e}")
-
-                uri = (self.uri_var.get() or "").strip()
-                try:
-                    if uri:
-                        self.lbl_restart.config(text="Powering down…")
-                        from cflib.utils.power_switch import PowerSwitch
-
-                        ps = PowerSwitch(uri)
-                        ps.stm_power_down()
-                        time.sleep(3)
-                        self.lbl_restart.config(text="Powering up…")
-                        ps.stm_power_up()
-                        time.sleep(3)
-                except Exception as e:
-                    self.log(f"Power cycle error: {e}")
-
-                try:
-                    self.lbl_restart.config(text="Clearing ports…")
+            # 2) Optional: clear UDP ports (Windows only)
+            try:
+                if sys.platform.startswith("win"):
                     from .utils import clear_udp_ports_windows
 
                     clear_udp_ports_windows([8888, 8889])
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-                if self.cfg.auto_reconnect:
-                    try:
-                        self.lbl_restart.config(text="Reconnecting…")
-                        self.on_connect()
-                        self._set_controls_enabled(False)
-                        self.lbl_restart.config(text="Restart complete")
-                    except Exception as e:
-                        self.log(f"Reconnect error: {e}")
-                        self.lbl_restart.config(text="Restart done (not connected)")
-                else:
-                    self.lbl_restart.config(text="Restart done")
-            finally:
-                self._set_controls_enabled(True)
-                self.after(2000, lambda: self.lbl_restart.config(text="—"))
-
-        threading.Thread(target=worker, daemon=True).start()
+            # 3) Auto-reconnect if enabled
+            if getattr(self.cfg, "auto_reconnect", True):
+                self._status("Reconnecting…")
+                try:
+                    self.on_connect()
+                    self._status("Restart complete")
+                except Exception as e:
+                    self._status("Restart done (not connected)")
+                    self.enqueue_log(f"[restart] reconnect failed: {e}")
+            else:
+                self._status("Restart done")
+        finally:
+            time.sleep(2.0)
+            self._status("—")
+            try:
+                self.btn_restart.configure(state="normal")
+            except Exception:
+                pass
 
     # ---- logging of selected params ----
     def _append_log_params_sample(self):
