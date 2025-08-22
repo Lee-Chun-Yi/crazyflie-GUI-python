@@ -12,6 +12,8 @@ class SharedState:
     })
     # User target coords (m)
     user_xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Throttle offset applied to incoming RPYT throttle
+    throttle_offset: int = 40000
     # Telemetry
     vbat: float = 0.0
     rssi: float = float('nan')       # last received RSSI in dBm

@@ -6,7 +6,7 @@ from collections import deque
 import math
 
 from .models import SharedState
-from .config import load_config, save_config
+from .config import load_config, save_config, Rates
 from .control import UDPInput, SetpointLoop, PWMSetpointLoop, PWMUDPReceiver
 from typing import TYPE_CHECKING
 
@@ -35,6 +35,7 @@ def decode_pose_be_doubles(payload: bytes):
 
 UDP_COORD_PORT = 51002
 RADIO_BITRATES = ("2M", "1M", "250K")
+UI_TICK_MS = int(1000 / Rates.LOG_UI_HZ)
 
 class App(tk.Tk):
     def __init__(self):
@@ -47,6 +48,7 @@ class App(tk.Tk):
 
         self.state_model = SharedState()
         self.cfg = load_config()
+        self.state_model.throttle_offset = self.cfg.throttle_offset
         self.link: "LinkManager|None" = None
         self.cf = None
 
@@ -223,7 +225,7 @@ class App(tk.Tk):
         self._update_view()
 
         # timers
-        self.after(250, self._ui_tick)
+        self.after(UI_TICK_MS, self._ui_tick)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # background UDP reader
@@ -358,6 +360,14 @@ class App(tk.Tk):
         ttk.Spinbox(fc, from_=1, to=1000, width=6, textvariable=self.sp_hz_var).pack(side=tk.LEFT, padx=(4,0))
         self.lbl_sp_actual = ttk.Label(fc, text="Actual: -- Hz")
         self.lbl_sp_actual.pack(side=tk.LEFT, padx=(12,0))
+
+        self.lbl_rpyt = ttk.Label(fc, text="R: 0.00°  P: 0.00°  Y: 0.00°/s  T: 0")
+        self.lbl_rpyt.pack(side=tk.LEFT, padx=(12,0))
+        ttk.Label(fc, text="Throttle offset").pack(side=tk.LEFT, padx=(12,0))
+        self.offset_var = tk.StringVar(value=str(self.cfg.throttle_offset))
+        ttk.Spinbox(fc, from_=0, to=65535, width=8,
+                    textvariable=self.offset_var).pack(side=tk.LEFT, padx=(4,0))
+        self.offset_var.trace_add("write", self._on_offset_change)
 
         # --- 4-PID tab (PWM direct) ---
         pwmf = ttk.Labelframe(tab4, text="PWM Control", padding=8)
@@ -819,6 +829,17 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+    def _on_offset_change(self, *_):
+        try:
+            val = int(self.offset_var.get())
+        except Exception:
+            return
+        val = max(0, min(65535, val))
+        with self.state_model.lock:
+            self.state_model.throttle_offset = val
+        self.cfg.throttle_offset = val
+        save_config(self.cfg)
+
     def _on_ctrl_tab_change(self, *_):
         if not hasattr(self, 'ctrl_nb'):
             return
@@ -1026,6 +1047,21 @@ class App(tk.Tk):
         self.lbl_latency.config(text=f"Latency: {lat_ms:.1f} ms" if lat_ms==lat_ms else "Latency: -- ms")
         self.lbl_rssi.config(text=f"RSSI: {rssi_dbm}" if rssi_dbm==rssi_dbm else "RSSI: --")
 
+        try:
+            with self.state_model.lock:
+                rpyth = dict(self.state_model.rpyth)
+                offset = int(getattr(self.state_model, "throttle_offset", 40000))
+            self.lbl_rpyt.config(
+                text=(
+                    f"R: {rpyth['roll']:.2f}°  P: {rpyth['pitch']:.2f}°  "
+                    f"Y: {rpyth['yaw']:.2f}/s  T: {int(rpyth['thrust'])}"
+                )
+            )
+            if self.offset_var.get() != str(offset):
+                self.offset_var.set(str(offset))
+        except Exception:
+            pass
+
         # arm/disarm toggle state
         try:
             if self.link and self.link.arm_param:
@@ -1096,7 +1132,7 @@ class App(tk.Tk):
         if self.canvas3d is None and self.right_box.winfo_ismapped():
             self._ensure_3d_canvas()
         if self.canvas3d is None:
-            self.after(250, self._ui_tick)
+            self.after(UI_TICK_MS, self._ui_tick)
             return
         with self._vrx_lock:
             last = self._last_vicon
@@ -1135,7 +1171,7 @@ class App(tk.Tk):
                 self.canvas3d.draw_idle()
                 self._last_draw_ts = now
 
-        self.after(250, self._ui_tick)
+        self.after(UI_TICK_MS, self._ui_tick)
 
     def on_close(self):
         try:
