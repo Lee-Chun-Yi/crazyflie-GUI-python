@@ -1165,10 +1165,11 @@ class App(tk.Tk):
 
     def _sp_stop(self):
         controller.land("rpyt", self.state_model, self.link)
+        controller.clear_udp_8888()
         self.setpoints = None
         self.btn_sp_start.configure(state=tk.NORMAL)
         self.btn_sp_stop.configure(state=tk.DISABLED)
-        self.log("Setpoint loop stopped")
+        self.log("Landing complete, RPYT=0 sent, port 8888 cleared.")
 
 
     # ---- PWM loop ----
@@ -1197,10 +1198,11 @@ class App(tk.Tk):
 
     def _pwm_stop(self):
         controller.land("pwm", self.state_model, self.link)
+        controller.clear_udp_8888()
         self.pwm_loop = None
         self.btn_pwm_start.configure(state=tk.NORMAL)
         self.btn_pwm_stop.configure(state=tk.DISABLED)
-        self.log("4PID loop stopped")
+        self.log("Landing complete (PWM), port 8888 cleared.")
         self._on_pwm_mode_change()
     def _on_pwm_mode_change(self, *_):
         """Switch m1~m4 Entry state based on selected PWM mode."""

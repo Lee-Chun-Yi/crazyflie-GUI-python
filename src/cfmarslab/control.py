@@ -789,10 +789,15 @@ def land(mode: str, state: SharedState, link: LinkManager):
             return False
         with state.lock:
             start_thr = int(state.rpyth.get("thrust", 0))
-        send_rpyt_zero(commander)
+        # immediate neutral frame before stopping loop
+        try:
+            cf.commander.send_setpoint(0.0, 0.0, 0.0, 0)
+        except Exception:
+            logger.exception("Failed to send neutral RPYT in Land")
         if _setpoint_loop and _setpoint_loop.is_running():
             _setpoint_loop.stop()
             _setpoint_loop = None
+        # ramp down thrust with zeros for roll/pitch/yaw
         smooth_landing(commander, "rpyt", start_thrust=start_thr)
     else:
         last = [0, 0, 0, 0]
@@ -805,6 +810,7 @@ def land(mode: str, state: SharedState, link: LinkManager):
         smooth_landing(cf, "pwm", start_thrust=avg)
         _pwm_loop = None
 
+    # final safety zero
     zero_output(mode, link)
     try:
         link.send_arming_request(False)
@@ -813,6 +819,12 @@ def land(mode: str, state: SharedState, link: LinkManager):
     with state.lock:
         state.active_mode = None
         state.is_flying.clear()
+
+    clear_udp_8888()
+    if mode == "rpyt":
+        logging.info("Landing complete, RPYT=0 sent, port 8888 cleared.")
+    else:
+        logging.info("Landing complete (PWM), port 8888 cleared.")
     return True
 
 
