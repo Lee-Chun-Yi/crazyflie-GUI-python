@@ -19,6 +19,14 @@ class Safety:
     TAKEOFF_THRUST: int = 38000  # 起飛油門門檻
 
 @dataclass(frozen=True)
+class Landing:
+    """Default parameters for smooth landing ramps."""
+    MID_THRUST: int = 35000
+    RAMP1_TIME: float = 1.5
+    RAMP2_TIME: float = 0.5
+    STEPS: int = 10
+
+@dataclass(frozen=True)
 class Controls:
     ARM_PARAM_CANDIDATES: tuple[str, ...] = (
         "stabilizer.armed",

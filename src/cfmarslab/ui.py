@@ -7,7 +7,8 @@ import math
 
 from .models import SharedState
 from .config import load_config, save_config, Rates
-from .control import UDPInput, SetpointLoop, PWMSetpointLoop, PWMUDPReceiver
+from .control import UDPInput
+from . import control as controller
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -232,9 +233,8 @@ class App(tk.Tk):
         self.udp = UDPInput(self.state_model)
         self.udp.start()
 
-        self.setpoints: SetpointLoop|None = None
-        self.pwm_loop: PWMSetpointLoop|None = None
-        self.pwm_udp: PWMUDPReceiver|None = None
+        self.setpoints = None
+        self.pwm_loop = None
 
     # ---- helpers ----
     def log(self, s: str):
@@ -331,14 +331,10 @@ class App(tk.Tk):
         ttk.Label(optrow, text="Decimate").pack(side=tk.LEFT, padx=(12,4))
         ttk.Combobox(optrow, width=4, state="readonly", values=["1","2","5","10"], textvariable=self.decimate_var).pack(side=tk.LEFT)
 
-        # Arm toggle, restart and state labels
+        # Restart and state label
         armrow = ttk.Frame(parent)
-        self.btn_arm = ttk.Button(armrow, text="Arm", command=self._on_arm_toggle, state=tk.DISABLED)
-        self.btn_arm.pack(side=tk.LEFT)
-        self.lbl_arm_state = ttk.Label(armrow, text="—", foreground="gray")
-        self.lbl_arm_state.pack(side=tk.LEFT, padx=(6,0))
         self.btn_restart = ttk.Button(armrow, text="Restart", command=self._on_restart)
-        self.btn_restart.pack(side=tk.LEFT, padx=(6,0))
+        self.btn_restart.pack(side=tk.LEFT)
         self.lbl_restart = ttk.Label(armrow, text="—")
         self.lbl_restart.pack(side=tk.LEFT, padx=(6,0))
         armrow.pack(anchor=tk.W, pady=(8,0))
@@ -357,10 +353,12 @@ class App(tk.Tk):
         fc.pack(fill=tk.X)
         row1 = ttk.Frame(fc)
         row1.pack(fill=tk.X)
-        self.btn_sp_start = ttk.Button(row1, text="Start", command=self._sp_start)
-        self.btn_sp_stop  = ttk.Button(row1, text="Stop",  command=self._sp_stop, state=tk.DISABLED)
+        self.btn_sp_start = ttk.Button(row1, text="Take off", command=self._sp_start)
         self.btn_sp_start.pack(side=tk.LEFT)
+        self.btn_sp_start.tooltip = "Connect, send neutral frame, auto-arm, and start the control loop."
+        self.btn_sp_stop  = ttk.Button(row1, text="Land",  command=self._sp_stop, state=tk.DISABLED)
         self.btn_sp_stop.pack(side=tk.LEFT, padx=(6,12))
+        self.btn_sp_stop.tooltip = "Smoothly ramp down and send final zero. Stop the control loop."
         self.sp_hz_var = tk.IntVar(value=100)
         ttk.Label(row1, text="Rate (Hz)").pack(side=tk.LEFT)
         ttk.Spinbox(row1, from_=1, to=1000, width=6, textvariable=self.sp_hz_var).pack(side=tk.LEFT, padx=(4,0))
@@ -397,10 +395,12 @@ class App(tk.Tk):
             self.pwm_entries.append(e)
         self._on_pwm_mode_change()
         rowb = ttk.Frame(pwmf); rowb.pack(fill=tk.X, pady=(8,0))
-        self.btn_pwm_start = ttk.Button(rowb, text="Start", command=self._pwm_start)
-        self.btn_pwm_stop  = ttk.Button(rowb, text="Stop", command=self._pwm_stop, state=tk.DISABLED)
+        self.btn_pwm_start = ttk.Button(rowb, text="Take off", command=self._pwm_start)
         self.btn_pwm_start.pack(side=tk.LEFT)
+        self.btn_pwm_start.tooltip = "Connect, send neutral frame, auto-arm, and start the control loop."
+        self.btn_pwm_stop  = ttk.Button(rowb, text="Land", command=self._pwm_stop, state=tk.DISABLED)
         self.btn_pwm_stop.pack(side=tk.LEFT, padx=(6,12))
+        self.btn_pwm_stop.tooltip = "Smoothly ramp down and send final zero. Stop the control loop."
         self.pwm_hz_var = tk.IntVar(value=200)
         ttk.Label(rowb, text="Rate (Hz)").pack(side=tk.LEFT)
         ttk.Spinbox(rowb, from_=1, to=1000, width=6, textvariable=self.pwm_hz_var).pack(side=tk.LEFT, padx=(4,0))
@@ -410,7 +410,7 @@ class App(tk.Tk):
         # Safety（共用）
         safe = ttk.Labelframe(parent, text="Safety", padding=8); safe.pack(fill=tk.X, pady=(8,0))
         ttk.Button(safe, text="Emergency stop", command=self.emergency_stop).pack(side=tk.LEFT)
-        ttk.Button(safe, text="Land (ramp down)", command=self.land).pack(side=tk.LEFT, padx=8)
+        ttk.Button(safe, text="Land", command=self.land).pack(side=tk.LEFT, padx=8)
 
     def _apply_axes_bounds(self):
         if not self.ax3d:
@@ -715,8 +715,6 @@ class App(tk.Tk):
             if not self.link.arm_param:
                 self.log("[ARM] no arming param")
             self.btn_conn.configure(state=tk.DISABLED); self.btn_disc.configure(state=tk.NORMAL)
-            self.btn_arm.configure(state=tk.DISABLED)
-            self.lbl_arm_state.configure(text="—")
             uris = [u for u in [uri] + self.cfg.recent_uris if u and u != uri]
             self.cfg.recent_uris = [uri] + uris[:7]; save_config(self.cfg)
             self.mru_combo.configure(values=self.cfg.recent_uris)
@@ -728,15 +726,12 @@ class App(tk.Tk):
         try:
             if self.setpoints: self.setpoints.stop(); self.setpoints=None
             if self.pwm_loop: self.pwm_loop.stop(); self.pwm_loop=None
-            if self.pwm_udp: self.pwm_udp.stop(); self.pwm_udp=None
             if getattr(self, "_vrx_running", False):
                 try: self._vrx_stop()
                 except Exception: pass
             if self.link: self.link.disconnect(); self.link=None
             self.cf = None
             self.btn_conn.configure(state=tk.NORMAL); self.btn_disc.configure(state=tk.DISABLED)
-            self.btn_arm.configure(state=tk.DISABLED)
-            self.lbl_arm_state.configure(text="—")
             if hasattr(self, "lbl_status"):
                 self.lbl_status.configure(text=" | Disconnected")
             self.log("Disconnected")
@@ -747,11 +742,9 @@ class App(tk.Tk):
         if self.link:
             self.btn_conn.config(state=tk.DISABLED)
             self.btn_disc.config(state=tk.NORMAL)
-            self.btn_arm.config(state=tk.NORMAL if self.link.arm_param else tk.DISABLED)
         else:
             self.btn_conn.config(state=tk.NORMAL)
             self.btn_disc.config(state=tk.DISABLED)
-            self.btn_arm.config(state=tk.DISABLED)
         self.btn_restart.config(state=tk.NORMAL)
         self.btn_scan.config(state=tk.NORMAL)
         self.btn_sp_start.config(state=tk.NORMAL)
@@ -763,7 +756,6 @@ class App(tk.Tk):
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         widgets = [
-            self.btn_arm,
             self.btn_restart,
             self.btn_conn,
             self.btn_disc,
@@ -812,61 +804,54 @@ class App(tk.Tk):
 
     # ---- Setpoint loop (CF) ----
     def _sp_start(self):
-        if self.pwm_loop and self.pwm_loop.is_running():
+        if self.pwm_loop and getattr(self.pwm_loop, "is_running", lambda: False)():
             self._pwm_stop()
-        if not self.link:
-            self.log("Not connected"); return
-        if not self.setpoints:
-            self.setpoints = SetpointLoop(self.state_model, self.link, rate_hz=int(self.sp_hz_var.get()))
-        self.setpoints.set_rate(int(self.sp_hz_var.get()))
-        self.link.send_setpoint(0.0, 0.0, 0.0, 0)
-        self.log("Initial zero setpoint sent")
-        self.setpoints.start()
-        self.btn_sp_start.configure(state=tk.DISABLED); self.btn_sp_stop.configure(state=tk.NORMAL)
-        self.log(f"Setpoint loop started @ {self.setpoints.get_rate()} Hz")
+        loop = controller.start_mode("rpyt", self.state_model, self.link, rate_hz=int(self.sp_hz_var.get()))
+        if loop:
+            self.setpoints = loop
+            self.btn_sp_start.configure(state=tk.DISABLED)
+            self.btn_sp_stop.configure(state=tk.NORMAL)
+            self.log(f"Setpoint loop started @ {loop.get_rate()} Hz")
+        else:
+            self.log("Setpoint loop failed to start")
 
     def _sp_stop(self):
-        if self.setpoints: self.setpoints.stop()
-        self.btn_sp_start.configure(state=tk.NORMAL); self.btn_sp_stop.configure(state=tk.DISABLED)
+        controller.land("rpyt", self.state_model, self.link)
+        self.setpoints = None
+        self.btn_sp_start.configure(state=tk.NORMAL)
+        self.btn_sp_stop.configure(state=tk.DISABLED)
         self.log("Setpoint loop stopped")
 
 
     # ---- PWM loop ----
     def _pwm_start(self):
-        if self.setpoints and self.setpoints.is_running():
+        if self.setpoints and getattr(self.setpoints, "is_running", lambda: False)():
             self._sp_stop()
-        if not self.link:
-            self.log("Not connected"); return
-        if not self.pwm_loop:
-            self.pwm_loop = PWMSetpointLoop(self.link)
         mode = self.pwm_mode_var.get()
+        pwm_vals = []
         if mode == "manual":
-            pwm = []
             for var in self.pwm_vars:
                 try:
-                    v = int(var.get())
+                    pwm_vals.append(int(var.get()))
                 except Exception:
-                    v = 0
-                pwm.append(max(0, min(65535, v)))
-            self.pwm_loop.set_mode("manual")
-            self.pwm_loop.set_manual_pwm(pwm)
+                    pwm_vals.append(0)
+        loop = controller.start_mode("pwm", self.state_model, self.link,
+                                     rate_hz=int(self.pwm_hz_var.get()),
+                                     pwm_mode=mode, manual_pwm=pwm_vals)
+        if loop:
+            self.pwm_loop = loop
+            self.btn_pwm_start.configure(state=tk.DISABLED)
+            self.btn_pwm_stop.configure(state=tk.NORMAL)
+            self.log("4PID loop started")
+            self._on_pwm_mode_change()
         else:
-            if not self.pwm_udp:
-                self.pwm_udp = PWMUDPReceiver(port=8888)
-            self.pwm_udp.start()
-            self.pwm_loop.attach_udp(self.pwm_udp)
-            self.pwm_loop.set_mode("udp")
-        self.pwm_loop.set_rate(int(self.pwm_hz_var.get()))
-        self.pwm_loop.start()
-        self.btn_pwm_start.configure(state=tk.DISABLED); self.btn_pwm_stop.configure(state=tk.NORMAL)
-        self.log("4PID loop started")
-        self._on_pwm_mode_change()
+            self.log("4PID loop failed to start")
 
     def _pwm_stop(self):
-        if self.pwm_loop: self.pwm_loop.stop()
-        if self.pwm_mode_var.get() == "udp" and self.pwm_udp:
-            self.pwm_udp.stop()
-        self.btn_pwm_start.configure(state=tk.NORMAL); self.btn_pwm_stop.configure(state=tk.DISABLED)
+        controller.land("pwm", self.state_model, self.link)
+        self.pwm_loop = None
+        self.btn_pwm_start.configure(state=tk.NORMAL)
+        self.btn_pwm_stop.configure(state=tk.DISABLED)
         self.log("4PID loop stopped")
         self._on_pwm_mode_change()
     def _on_pwm_mode_change(self, *_):
@@ -901,30 +886,6 @@ class App(tk.Tk):
             if self.setpoints and self.setpoints.is_running():
                 self._sp_stop()
 
-    def _on_arm_toggle(self):
-        if not (self.link and self.link.arm_param):
-            self.log("[ARM] no arming param")
-            return
-        name = self.link.arm_param
-        try:
-            cur = self.link.get_bool_param(name, False)
-            target = not cur
-            ok = self.link.set_bool_param(name, target)
-            armed = self.link.get_bool_param(name, False)
-            if ok:
-                self.log(f"[ARM] -> {'arm' if armed else 'disarm'}")
-            else:
-                self.log("[ARM] write failed")
-            # update UI immediately
-            if armed:
-                self.btn_arm.config(text="Disarm")
-                self.lbl_arm_state.config(text="arm")
-            else:
-                self.btn_arm.config(text="Arm")
-                self.lbl_arm_state.config(text="disarm")
-        except Exception as e:
-            self.log(f"[ARM] error: {e}")
-
     # ---- Safety ----
     def emergency_stop(self):
         if self._is_4pid_mode_active():
@@ -956,62 +917,8 @@ class App(tk.Tk):
                 self.log(f"Emergency stop failed: {e}")
 
     def land(self):
-        def _ramp_2pid():
-            try:
-                if not self.link: self.log("Not connected"); return
-                steps, T = 20, 2.5; thrust = 48000
-                for i in range(steps):
-                    level = int(thrust * (1 - (i+1)/steps))
-                    self.link.send_setpoint(0.0, 0.0, 0.0, max(level, 0))
-                    time.sleep(T/steps)
-                self.link.send_setpoint(0.0, 0.0, 0.0, 0)
-                self.log("Land complete")
-            except Exception as e:
-                self.log(f"Land error: {e}")
-
-        def _ramp_4pid():
-            try:
-                if not self.cf:
-                    self.log("Not connected"); return
-                if self.pwm_loop and self.pwm_loop.is_running():
-                    self._pwm_stop()
-                vals = []
-                if self.pwm_loop and getattr(self.pwm_loop, "last_pwm", None):
-                    vals = self.pwm_loop.last_pwm
-                else:
-                    for var in getattr(self, "pwm_vars", []):
-                        try:
-                            vals.append(int(var.get()))
-                        except Exception:
-                            vals.append(0)
-                if len(vals) < 4:
-                    vals.extend([0]*(4-len(vals)))
-                start = int(sum(vals)/4)
-                steps, T = 20, 2.5
-                for i in range(steps):
-                    level = max(int(start * (1 - (i+1)/steps)), 0)
-                    for j in range(4):
-                        try:
-                            self.cf.param.set_value(f"motorPowerSet.m{j+1}", str(level))
-                        except Exception as e:
-                            self.log(f"Land m{j+1} set error: {e}")
-                    time.sleep(T/steps)
-                for j in range(4):
-                    try:
-                        self.cf.param.set_value(f"motorPowerSet.m{j+1}", "0")
-                    except Exception as e:
-                        self.log(f"Land m{j+1} final error: {e}")
-                if getattr(self, "pwm_vars", None):
-                    for var in self.pwm_vars:
-                        try:
-                            var.set("0")
-                        except Exception:
-                            pass
-                self.log("Land complete (4-PID)")
-            except Exception as e:
-                self.log(f"Land error: {e}")
-
-        threading.Thread(target=_ramp_4pid if self._is_4pid_mode_active() else _ramp_2pid, daemon=True).start()
+        mode = "pwm" if self._is_4pid_mode_active() else "rpyt"
+        controller.land(mode, self.state_model, self.link)
 
     def _on_restart(self):
         threading.Thread(target=self._restart_worker, daemon=True).start()
@@ -1159,19 +1066,6 @@ class App(tk.Tk):
         except Exception:
             pass
 
-        # arm/disarm toggle state
-        try:
-            if self.link and self.link.arm_param:
-                armed = self.link.get_bool_param(self.link.arm_param, False)
-                self.btn_arm.config(state=tk.NORMAL, text="Disarm" if armed else "Arm")
-                self.lbl_arm_state.config(text="arm" if armed else "disarm")
-            else:
-                self.btn_arm.config(state=tk.DISABLED, text="Arm")
-                self.lbl_arm_state.config(text="—")
-        except Exception:
-            self.btn_arm.config(state=tk.DISABLED, text="Arm")
-            self.lbl_arm_state.config(text="—")
-
         # control timing KPIs and actual rates (update <=1Hz)
         now = perf_counter()
         if now - getattr(self, "_last_kpi_update", 0.0) >= 1.0:
@@ -1216,8 +1110,8 @@ class App(tk.Tk):
 
         # update PWM display fields
         try:
-            if self.pwm_mode_var.get() == "udp" and self.pwm_udp:
-                vals = self.pwm_udp.get_last()
+            if self.pwm_loop and self.pwm_mode_var.get() == "udp":
+                vals = getattr(self.pwm_loop, "last_pwm", [0, 0, 0, 0])
                 for i, var in enumerate(self.pwm_vars):
                     var.set(str(int(vals[i])))
         except Exception:
@@ -1275,7 +1169,6 @@ class App(tk.Tk):
             self._coords_running = False
             if self.setpoints: self.setpoints.stop()
             if self.pwm_loop: self.pwm_loop.stop()
-            if self.pwm_udp: self.pwm_udp.stop()
             if getattr(self, "_vrx_running", False):
                 try: self._vrx_stop()
                 except Exception: pass
