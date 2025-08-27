@@ -5,7 +5,7 @@ from tkinter import ttk, scrolledtext, messagebox
 from collections import deque
 import math
 
-from .models import SharedState
+from .models import SharedState, get_last_stream_xyz
 from .config import load_config, save_config, Rates, PathCfg, PreviewCfg
 from .control import UDPInput
 from . import control as controller
@@ -188,6 +188,7 @@ class App(tk.Tk):
         self._preview_target = None
         self._preview_path = None
         self._preview_extra = None  # center or vertices
+        self._cur_target_scatter = None
         self._last_draw_ts = 0.0
         self._last_kpi_update = 0.0
         self.vx_var = tk.StringVar(value="--")
@@ -245,6 +246,7 @@ class App(tk.Tk):
 
         # timers
         self.after(UI_TICK_MS, self._ui_tick)
+        self.after(50, self._cur_target_tick)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # background UDP reader
@@ -602,6 +604,7 @@ class App(tk.Tk):
         self.ax3d.set_xlim(-1000, 1000)
         self.ax3d.set_ylim(-1000, 1000)
         self.ax3d.set_zlim(0, 1500)
+        self._cur_target_scatter = self.ax3d.scatter([], [], [], s=40, c="green", depthshade=False)
         self.canvas3d = FigureCanvasTkAgg(self._fig, master=self.plot_container)
         self.canvas3d.draw_idle()
         self.canvas3d.get_tk_widget().grid(row=0, column=0, sticky="nsew")
@@ -612,6 +615,17 @@ class App(tk.Tk):
         tab_text = self.notebook.tab(self.notebook.select(), "text") or ""
         if "Vicon" in tab_text or "3D" in tab_text:
             self._ensure_3d_canvas()
+
+    def _cur_target_tick(self):
+        last = get_last_stream_xyz()
+        if last and self._cur_target_scatter is not None:
+            x, y, z = last
+            self._cur_target_scatter._offsets3d = ([x], [y], [z])
+        elif self._cur_target_scatter is not None:
+            self._cur_target_scatter._offsets3d = ([], [], [])
+        if getattr(self, "canvas3d", None):
+            self.canvas3d.draw_idle()
+        self.after(50, self._cur_target_tick)
 
     def _safe_rate_hz(self, default=30):
         try:

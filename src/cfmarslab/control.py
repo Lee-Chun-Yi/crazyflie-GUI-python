@@ -6,13 +6,18 @@ from typing import Optional, List
 from queue import Queue
 from collections import deque
 
-from .models import SharedState
+from .models import SharedState, set_last_stream_xyz, get_last_stream_xyz as _get_last_stream_xyz
 from .utils import set_realtime_priority
 from .realtime import Realtime
 from .config import RT, Safety, Landing, Rates, PreviewCfg
 from .link import LinkManager
 
 logger = logging.getLogger(__name__)
+
+
+def get_last_stream_xyz():
+    """Expose last streamed XYZ for read-only access."""
+    return _get_last_stream_xyz()
 
 # Global loop references to ensure only one active at a time
 _setpoint_loop: Optional['SetpointLoop'] = None
@@ -539,6 +544,7 @@ class FlightPathLoop(BaseLoop):
             self._sock.close()
         except Exception:
             pass
+        set_last_stream_xyz(None)
 
     def _should_run(self) -> bool:
         return self._run_flag.is_set() and not self.state.stop_all.is_set()
@@ -636,6 +642,7 @@ class FlightPathLoop(BaseLoop):
                 ang = 0.0
                 idx = 0.0
             pkt = struct.pack("<3f", float(x), float(y), float(z))
+            set_last_stream_xyz((x, y, z))
             self._sender.enqueue(self._sock.sendto, pkt, self._addr)
             with self.state.lock:
                 self.state.path_last_xyz = (x, y, z)
@@ -846,6 +853,7 @@ def start_path(state: SharedState):
     with state.lock:
         state.stream_running = True
         state.path_error = ""
+    set_last_stream_xyz(base_xyz)
     return loop
 
 
@@ -864,6 +872,7 @@ def stop_path(state: SharedState):
         _path_loop = None
     with state.lock:
         state.stream_running = False
+    set_last_stream_xyz(None)
 
 
 def send_xyz_once(x: float, y: float, z: float):
@@ -871,7 +880,9 @@ def send_xyz_once(x: float, y: float, z: float):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setblocking(False)
-        sock.sendto(struct.pack("<3f", float(x), float(y), float(z)), ("127.0.0.1", 51002))
+        x, y, z = float(x), float(y), float(z)
+        set_last_stream_xyz((x, y, z))
+        sock.sendto(struct.pack("<3f", x, y, z), ("127.0.0.1", 51002))
     except Exception:
         pass
     finally:
