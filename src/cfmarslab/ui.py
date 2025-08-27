@@ -819,6 +819,8 @@ class App(tk.Tk):
         if not self.setpoints:
             self.setpoints = SetpointLoop(self.state_model, self.link, rate_hz=int(self.sp_hz_var.get()))
         self.setpoints.set_rate(int(self.sp_hz_var.get()))
+        self.link.send_setpoint(0.0, 0.0, 0.0, 0)
+        self.log("Initial zero setpoint sent")
         self.setpoints.start()
         self.btn_sp_start.configure(state=tk.DISABLED); self.btn_sp_stop.configure(state=tk.NORMAL)
         self.log(f"Setpoint loop started @ {self.setpoints.get_rate()} Hz")
