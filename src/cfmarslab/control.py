@@ -1,5 +1,5 @@
 from __future__ import annotations
-import socket, struct
+import socket, struct, logging, time
 from time import perf_counter_ns
 from threading import Thread, Event, Lock
 from typing import Optional, List
@@ -9,7 +9,13 @@ from collections import deque
 from .models import SharedState
 from .utils import set_realtime_priority
 from .realtime import Realtime
-from .config import RT, Safety
+from .config import RT, Safety, Landing, Rates
+from .link import LinkManager
+
+# Global loop references to ensure only one active at a time
+_setpoint_loop: Optional['SetpointLoop'] = None
+_pwm_loop: Optional['PWMSetpointLoop'] = None
+_pwm_udp: Optional['PWMUDPReceiver'] = None
 
 
 class UDPInput:
@@ -369,8 +375,10 @@ class SetpointLoop(BaseLoop):
                 r = p = y = 0.0
     
         cf = getattr(self.link, "cf", None)
-        if cf:
+        if cf is not None:
             self._sender.enqueue(cf.commander.send_setpoint, r, p, y, th)
+        elif hasattr(self.link, "send_setpoint"):
+            self._sender.enqueue(self.link.send_setpoint, r, p, y, th)
 
 
 
@@ -414,3 +422,157 @@ class PWMSetpointLoop(BaseLoop):
             pwm = list(self._manual_pwm)
         self.last_pwm[:] = pwm[:4]
         self._sender.enqueue(self._dispatch_pwm, pwm)
+
+
+# ---- helpers & public API ----
+
+def zero_output(mode: str, link: LinkManager) -> None:
+    """Send a neutral frame depending on control mode."""
+    cf = link.get_cf() if link else None
+    if cf is None:
+        return
+    if mode == "rpyt":
+        try:
+            cf.commander.send_setpoint(0.0, 0.0, 0.0, 0)
+        except Exception:
+            pass
+    else:
+        motors = ("m1", "m2", "m3", "m4")
+        for m in motors:
+            try:
+                cf.param.set_value(f"motorPowerSet.{m}", "0")
+            except Exception:
+                pass
+
+
+def smooth_landing(target, mode: str = "rpyt", *, start_thrust: int | None = None,
+                   mid_thrust: int = Landing.MID_THRUST,
+                   ramp1_time: float = Landing.RAMP1_TIME,
+                   ramp2_time: float = Landing.RAMP2_TIME,
+                   steps: int = Landing.STEPS) -> None:
+    """Ramp down thrust/PWM smoothly."""
+    if steps <= 0 or target is None:
+        return
+    # Phase 0: neutral frame
+    if mode == "rpyt":
+        try:
+            target.send_setpoint(0.0, 0.0, 0.0, 0)
+        except Exception:
+            pass
+    else:
+        for m in ("m1", "m2", "m3", "m4"):
+            try:
+                target.param.set_value(f"motorPowerSet.{m}", "0")
+            except Exception:
+                pass
+    if start_thrust is None:
+        start_thrust = mid_thrust
+    dt1 = ramp1_time / steps if steps else 0
+    dt2 = ramp2_time / steps if steps else 0
+    if mode == "rpyt":
+        cmd = target
+        for i in range(steps):
+            level = int(start_thrust - (start_thrust - mid_thrust) * (i + 1) / steps)
+            cmd.send_setpoint(0.0, 0.0, 0.0, max(level, 0))
+            time.sleep(dt1)
+        for i in range(steps):
+            level = int(mid_thrust - mid_thrust * (i + 1) / steps)
+            cmd.send_setpoint(0.0, 0.0, 0.0, max(level, 0))
+            time.sleep(dt2)
+    else:
+        cf = target
+        for i in range(steps):
+            level = int(start_thrust - (start_thrust - mid_thrust) * (i + 1) / steps)
+            for m in ("m1", "m2", "m3", "m4"):
+                try:
+                    cf.param.set_value(f"motorPowerSet.{m}", str(max(level, 0)))
+                except Exception:
+                    pass
+            time.sleep(dt1)
+        for i in range(steps):
+            level = int(mid_thrust - mid_thrust * (i + 1) / steps)
+            for m in ("m1", "m2", "m3", "m4"):
+                try:
+                    cf.param.set_value(f"motorPowerSet.{m}", str(max(level, 0)))
+                except Exception:
+                    pass
+            time.sleep(dt2)
+
+
+def start_mode(mode: str, state: SharedState, link: LinkManager, *, rate_hz: int | None = None,
+               pwm_mode: str = "manual", manual_pwm: List[int] | None = None,
+               udp_port: int = 8888):
+    """Ensure connection, send neutral, arm, and start the requested loop."""
+    global _setpoint_loop, _pwm_loop, _pwm_udp
+    if not link or not link.ensure_connected():
+        logging.error("No link; cannot start mode")
+        return None
+    zero_output(mode, link)
+    link.send_arming_request(True)
+
+    if mode == "rpyt":
+        if _pwm_loop and _pwm_loop.is_running():
+            _pwm_loop.stop()
+            _pwm_loop = None
+        if _setpoint_loop is None:
+            _setpoint_loop = SetpointLoop(state, link, rate_hz=rate_hz or Rates.SETPOINT_HZ)
+        _setpoint_loop.set_rate(rate_hz or _setpoint_loop.get_rate())
+        _setpoint_loop.start()
+        loop = _setpoint_loop
+    else:
+        if _setpoint_loop and _setpoint_loop.is_running():
+            _setpoint_loop.stop()
+            _setpoint_loop = None
+        if _pwm_loop is None:
+            _pwm_loop = PWMSetpointLoop(link, rate_hz=rate_hz or Rates.SETPOINT_HZ)
+        _pwm_loop.set_rate(rate_hz or _pwm_loop.get_rate())
+        _pwm_loop.set_mode(pwm_mode)
+        if pwm_mode == "manual" and manual_pwm is not None:
+            _pwm_loop.set_manual_pwm(manual_pwm)
+        elif pwm_mode == "udp":
+            if _pwm_udp is None:
+                _pwm_udp = PWMUDPReceiver(port=udp_port)
+            _pwm_udp.start()
+            _pwm_loop.attach_udp(_pwm_udp)
+        _pwm_loop.start()
+        loop = _pwm_loop
+    with state.lock:
+        state.active_mode = mode
+        state.is_flying.set()
+    return loop
+
+
+def land(mode: str, state: SharedState, link: LinkManager):
+    """Perform smooth landing then send final zero and stop loops."""
+    global _setpoint_loop, _pwm_loop, _pwm_udp
+    cf = link.get_cf() if link else None
+    if cf is None:
+        logging.error("No CF for landing")
+        return False
+    if mode == "rpyt":
+        if _setpoint_loop and _setpoint_loop.is_running():
+            with state.lock:
+                start_thr = int(state.rpyth.get("thrust", 0))
+            _setpoint_loop.stop()
+            smooth_landing(cf.commander, "rpyt", start_thrust=start_thr)
+            _setpoint_loop = None
+    else:
+        last = [0, 0, 0, 0]
+        if _pwm_loop and _pwm_loop.is_running():
+            last = list(getattr(_pwm_loop, "last_pwm", [0, 0, 0, 0]))
+            _pwm_loop.stop()
+        if _pwm_udp:
+            _pwm_udp.stop(); _pwm_udp = None
+        avg = int(sum(last)/4) if last else 0
+        smooth_landing(cf, "pwm", start_thrust=avg)
+        _pwm_loop = None
+
+    zero_output(mode, link)
+    try:
+        link.send_arming_request(False)
+    except Exception:
+        pass
+    with state.lock:
+        state.active_mode = None
+        state.is_flying.clear()
+    return True

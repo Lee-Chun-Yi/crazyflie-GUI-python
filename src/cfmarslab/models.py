@@ -23,6 +23,9 @@ class SharedState:
     stop_all: Event = field(default_factory=Event)
     stop_flight: Event = field(default_factory=Event)
     lock: Lock = field(default_factory=Lock)
+    # Active control mode and running state
+    active_mode: str | None = None
+    is_flying: Event = field(default_factory=Event)
 
     # Ring buffer for logs (UI plots)
     log_buf: Deque = field(default_factory=lambda: deque(maxlen=2000))

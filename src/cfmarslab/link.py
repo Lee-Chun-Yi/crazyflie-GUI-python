@@ -1,6 +1,7 @@
 # src/cfmarslab/link.py
 from __future__ import annotations
 import time
+import logging
 from typing import Optional, Iterable
 
 from cflib.crazyflie import Crazyflie
@@ -52,6 +53,35 @@ class LinkManager:
         lg.data_received_cb.add_callback(self._on_log)
         lg.start()
         self._lg = lg
+
+    # --- helpers ---
+    def ensure_connected(self) -> bool:
+        """Connect if not already connected."""
+        if self.cf is not None:
+            return True
+        try:
+            self.connect()
+            return True
+        except Exception as e:
+            logging.warning("Link connect failed: %s", e)
+            return False
+
+    def get_cf(self) -> Optional[Crazyflie]:
+        return self.cf
+
+    def get_commander(self):
+        cf = self.cf
+        return cf.commander if cf else None
+
+    def send_arming_request(self, value: bool) -> bool:
+        cf = self.cf
+        try:
+            if cf and getattr(cf, "platform", None):
+                cf.platform.send_arming_request(bool(value))
+                return True
+        except Exception as e:
+            logging.warning("Arming request failed: %s", e)
+        return False
 
     # --- parameter helpers ---
     @property
