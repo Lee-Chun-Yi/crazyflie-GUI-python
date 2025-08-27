@@ -1308,17 +1308,13 @@ class App(tk.Tk):
             self._sp_stop()
 
     def _on_clear_udp8888(self):
-        running = bool(getattr(self.state_model, "stream_running", False) or
-                       getattr(self.state_model, "using_udp_8888", False))
-        if running:
-            if not messagebox.askyesno(
-                "Clear UDP 8888",
-                "Streaming/receiver may still be using port 8888.\nStop them and clear anyway?",
-            ):
-                return
-        controller.clear_udp_8888()
-        self._console_log("[UDP] Port 8888 cleared.")
-        self._flash_status("Cleared")
+        if not messagebox.askyesno(
+            "Clear UDP 8888",
+            "Send neutral RPYT=0 and release port 8888?",
+        ):
+            return
+        controller.clear_udp_8888_with_neutral(self.link, self.state_model)
+        self._flash_status("Neutral sent + Port 8888 cleared.")
 
     def _on_restart(self):
         uri = str(self._current_uri())

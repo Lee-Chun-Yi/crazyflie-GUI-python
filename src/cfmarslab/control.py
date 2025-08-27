@@ -970,6 +970,37 @@ def clear_udp_8888(force: bool = True) -> None:
         logger.exception("clear_udp_8888 failed")
 
 
+def clear_udp_8888_with_neutral(link_mgr: LinkManager | None, state: SharedState | None) -> None:
+    """Send a neutral RPYT frame once, then clear UDP port 8888.
+
+    Args:
+        link_mgr: LinkManager instance to access the commander.
+        state: SharedState for flag updates (optional).
+    """
+
+    # 1) attempt to send neutral setpoint
+    try:
+        cmdr = link_mgr.get_commander() if link_mgr else None
+        if cmdr:
+            cmdr.send_setpoint(0.0, 0.0, 0.0, 0)
+            print("[UDP] Neutral RPYT (0,0,0,0) sent before clearing port 8888.")
+    except Exception as e:  # noqa: BLE001
+        print(f"[UDP] Failed to send neutral before clear: {e}")
+
+    # 2) clear the port using existing helper
+    try:
+        clear_udp_8888()
+        if state:
+            try:
+                with state.lock:
+                    state.using_udp_8888 = False
+            except Exception:
+                pass
+        print("[UDP] Port 8888 cleared.")
+    except Exception as e:  # noqa: BLE001
+        print(f"[UDP] Failed to clear port 8888: {e}")
+
+
 def send_udp_rpyt_zero():
     """Send a single zeroed RPYT packet to localhost UDP port 8888."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
