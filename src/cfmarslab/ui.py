@@ -1080,6 +1080,7 @@ class App(tk.Tk):
         if self.path_loop:
             controller.stop_path(self.state_model)
             self.path_loop = None
+        controller.clear_udp_8888()
         self.btn_xyz_start.configure(state=tk.NORMAL)
         self.btn_xyz_stop.configure(state=tk.DISABLED)
         self.lbl_xyz_status.configure(text="Idle")
