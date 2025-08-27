@@ -32,6 +32,7 @@ class SharedState:
 
     # --- XYZ path streaming state ---
     stream_running: bool = False
+    # Last path selection applied from the UI
     path_type: str = "none"      # "none" | "circle" | "square"
     path_params: Dict[str, float] = field(default_factory=dict)
     path_rate_hz: int = 20

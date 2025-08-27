@@ -57,6 +57,18 @@ class PathCfg:
     MIN_HZ: int = 1
     MAX_HZ: int = 200
 
+
+@dataclass(frozen=True)
+class PreviewCfg:
+    """Defaults for XYZ path preview rendering."""
+    CIRCLE_SAMPLES: int = 200
+    SQUARE_EDGE_SAMPLES: int = 50
+    TARGET_COLOR: str = "tab:red"
+    PATH_COLOR: str = "tab:blue"
+    CENTER_COLOR: str = "tab:gray"
+    TARGET_SIZE: int = 60
+    AXIS_MARGIN_FRAC: float = 0.1  # 10% margin around preview
+
 @dataclass
 class AppConfig:
     recent_uris: list[str]
