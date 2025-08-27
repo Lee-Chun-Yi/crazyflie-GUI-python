@@ -828,10 +828,11 @@ def land(mode: str, state: SharedState, link: LinkManager):
         state.is_flying.clear()
 
     clear_udp_8888()
+    send_udp_rpyt_zero()
     if mode == "rpyt":
-        logging.info("Landing complete, RPYT=0 sent, port 8888 cleared.")
+        logging.info("Landing complete, zero RPYT packet dispatched, port 8888 cleared.")
     else:
-        logging.info("Landing complete (PWM), port 8888 cleared.")
+        logging.info("Landing complete (PWM), zero RPYT packet dispatched, port 8888 cleared.")
     return True
 
 
@@ -901,3 +902,14 @@ def clear_udp_8888():
         logging.debug("[UDP] Cleared port 8888 after Stop")
     except OSError:
         pass
+
+
+def send_udp_rpyt_zero():
+    """Send a single zeroed RPYT packet to localhost UDP port 8888."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        pkt = struct.pack("<4f", 0.0, 0.0, 0.0, 0.0)
+        sock.sendto(pkt, ("127.0.0.1", 8888))
+        logging.debug("[UDP] Sent zero RPYT packet to port 8888")
+    finally:
+        sock.close()
