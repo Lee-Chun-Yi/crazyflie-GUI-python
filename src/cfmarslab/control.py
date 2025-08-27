@@ -718,7 +718,7 @@ def start_path(state: SharedState, rate_hz: int, base_xyz: tuple[float, float, f
     loop.start()
     _path_loop = loop
     with state.lock:
-        state.path_running = True
+        state.stream_running = True
         state.path_type = path_type
         state.path_params = dict(params)
         state.path_rate_hz = int(rate_hz)
@@ -733,7 +733,7 @@ def stop_path(state: SharedState):
         _path_loop.stop()
         _path_loop = None
     with state.lock:
-        state.path_running = False
+        state.stream_running = False
 
 
 def send_xyz_once(x: float, y: float, z: float):

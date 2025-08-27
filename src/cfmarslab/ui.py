@@ -34,7 +34,6 @@ def decode_pose_be_doubles(payload: bytes):
     x, y, z, rx, ry, rz, _ = decode_vicon_be(payload)
     return x, y, z, rx, ry, rz
 
-UDP_COORD_PORT = 51002
 RADIO_BITRATES = ("2M", "1M", "250K")
 UI_TICK_MS = int(1000 / Rates.LOG_UI_HZ)
 
@@ -53,8 +52,6 @@ class App(tk.Tk):
         self.link: "LinkManager|None" = None
         self.cf = None
 
-        self._coords_running = False
-        self._coords_thread: threading.Thread|None = None
         self.path_loop = None
 
         self._log_q = queue.Queue()
@@ -159,10 +156,8 @@ class App(tk.Tk):
         self.notebook = ttk.Notebook(self.left_pane)
         tab_controls = ttk.Frame(self.notebook)
         tab_logparam = ttk.Frame(self.notebook)
-        tab_path = ttk.Frame(self.notebook)
         self.notebook.add(tab_controls, text="Controls")
         self.notebook.add(tab_logparam, text="Log Parameter")
-        self.notebook.add(tab_path, text="Flight Path")
         self.notebook.pack(fill=tk.BOTH, expand=True)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -195,7 +190,6 @@ class App(tk.Tk):
         # Build tabs
         self._build_controls_tab(tab_controls)
         self._build_log_param_tab(tab_logparam)
-        self._build_flight_path_tab(tab_path)
 
         # Right column contents: 3D plot and console
         self.plot_container = ttk.Frame(self.right_box)
@@ -274,8 +268,9 @@ class App(tk.Tk):
 
         row2 = ttk.Frame(xyz); row2.pack(fill=tk.X)
         ttk.Label(row2, text="Rate (Hz)").pack(side=tk.LEFT)
-        self.xyz_hz_var = tk.IntVar(value=20)
-        ttk.Spinbox(row2, from_=1, to=500, width=6, textvariable=self.xyz_hz_var).pack(side=tk.LEFT, padx=(4,12))
+        self.xyz_hz_var = tk.IntVar(value=PathCfg.DEFAULT_HZ)
+        ttk.Spinbox(row2, from_=PathCfg.MIN_HZ, to=PathCfg.MAX_HZ, width=6,
+                    textvariable=self.xyz_hz_var).pack(side=tk.LEFT, padx=(4,12))
         self.btn_xyz_start = ttk.Button(row2, text="Start setpoints → MATLAB", command=self.start_coords)
         self.btn_xyz_stop  = ttk.Button(row2, text="Stop setpoints", state=tk.DISABLED, command=self.stop_coords)
         self.btn_xyz_start.pack(side=tk.LEFT)
@@ -284,6 +279,89 @@ class App(tk.Tk):
             row2, text="Current XYZ", command=self._on_use_vicon, state=tk.DISABLED
         )
         self.btn_use_vicon.pack(side=tk.LEFT, padx=6)
+
+        # Path selector
+        path_row = ttk.Frame(xyz); path_row.pack(fill=tk.X, pady=(6,0))
+        ttk.Label(path_row, text="Path").pack(side=tk.LEFT)
+        self.path_type_var = tk.StringVar(value="none")
+        ttk.Radiobutton(path_row, text="None", variable=self.path_type_var, value="none",
+                        command=self._on_path_type).pack(side=tk.LEFT, padx=(6,0))
+        ttk.Radiobutton(path_row, text="Circle", variable=self.path_type_var, value="circle",
+                        command=self._on_path_type).pack(side=tk.LEFT, padx=(6,0))
+        ttk.Radiobutton(path_row, text="Square", variable=self.path_type_var, value="square",
+                        command=self._on_path_type).pack(side=tk.LEFT, padx=(6,0))
+
+        # Parameter container
+        self.path_params_frame = ttk.Frame(xyz)
+        self.path_params_frame.pack(fill=tk.X, pady=(4,0))
+
+        # Circle params
+        self.circle_frame = ttk.Frame(self.path_params_frame)
+        ttk.Label(self.circle_frame, text="Center X").grid(row=0, column=0, padx=(0,4))
+        ttk.Label(self.circle_frame, text="Center Y").grid(row=0, column=2, padx=(12,4))
+        self.c_cx_var = tk.StringVar(value="0.0")
+        self.c_cy_var = tk.StringVar(value="0.0")
+        ttk.Entry(self.circle_frame, width=10, textvariable=self.c_cx_var).grid(row=0, column=1)
+        ttk.Entry(self.circle_frame, width=10, textvariable=self.c_cy_var).grid(row=0, column=3)
+        ttk.Label(self.circle_frame, text="Radius").grid(row=1, column=0, padx=(0,4))
+        self.c_radius_var = tk.StringVar(value="0.5")
+        ttk.Entry(self.circle_frame, width=10, textvariable=self.c_radius_var).grid(row=1, column=1)
+        ttk.Label(self.circle_frame, text="Speed").grid(row=1, column=2, padx=(12,4))
+        self.c_speed_var = tk.StringVar(value="0.2")
+        ttk.Entry(self.circle_frame, width=10, textvariable=self.c_speed_var).grid(row=1, column=3)
+        self.c_cw_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(self.circle_frame, text="Clockwise", variable=self.c_cw_var).grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        self.c_holdz_var = tk.BooleanVar(value=True)
+        chk = ttk.Checkbutton(self.circle_frame, text="Hold Z", variable=self.c_holdz_var,
+                              command=self._on_circle_holdz)
+        chk.grid(row=2, column=2, columnspan=2, sticky=tk.W)
+        ttk.Label(self.circle_frame, text="Z amp").grid(row=3, column=0, padx=(0,4))
+        self.c_zamp_var = tk.StringVar(value="0.0")
+        self.c_zamp_entry = ttk.Entry(self.circle_frame, width=10, textvariable=self.c_zamp_var)
+        self.c_zamp_entry.grid(row=3, column=1)
+        ttk.Label(self.circle_frame, text="Z period").grid(row=3, column=2, padx=(12,4))
+        self.c_zper_var = tk.StringVar(value="1.0")
+        self.c_zper_entry = ttk.Entry(self.circle_frame, width=10, textvariable=self.c_zper_var)
+        self.c_zper_entry.grid(row=3, column=3)
+
+        # Square params
+        self.square_frame = ttk.Frame(self.path_params_frame)
+        ttk.Label(self.square_frame, text="Center X").grid(row=0, column=0, padx=(0,4))
+        ttk.Label(self.square_frame, text="Center Y").grid(row=0, column=2, padx=(12,4))
+        self.s_cx_var = tk.StringVar(value="0.0")
+        self.s_cy_var = tk.StringVar(value="0.0")
+        ttk.Entry(self.square_frame, width=10, textvariable=self.s_cx_var).grid(row=0, column=1)
+        ttk.Entry(self.square_frame, width=10, textvariable=self.s_cy_var).grid(row=0, column=3)
+        ttk.Label(self.square_frame, text="Side length").grid(row=1, column=0, padx=(0,4))
+        self.s_side_var = tk.StringVar(value="1.0")
+        ttk.Entry(self.square_frame, width=10, textvariable=self.s_side_var).grid(row=1, column=1)
+        ttk.Label(self.square_frame, text="Speed").grid(row=1, column=2, padx=(12,4))
+        self.s_speed_var = tk.StringVar(value="0.2")
+        ttk.Entry(self.square_frame, width=10, textvariable=self.s_speed_var).grid(row=1, column=3)
+        self.s_cw_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(self.square_frame, text="Clockwise", variable=self.s_cw_var).grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(self.square_frame, text="Corner dwell (s)").grid(row=2, column=2, padx=(12,4))
+        self.s_dwell_var = tk.StringVar(value="0.0")
+        ttk.Entry(self.square_frame, width=10, textvariable=self.s_dwell_var).grid(row=2, column=3)
+        self.s_holdz_var = tk.BooleanVar(value=True)
+        chk2 = ttk.Checkbutton(self.square_frame, text="Hold Z", variable=self.s_holdz_var,
+                               command=self._on_square_holdz)
+        chk2.grid(row=3, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(self.square_frame, text="Z amp").grid(row=4, column=0, padx=(0,4))
+        self.s_zamp_var = tk.StringVar(value="0.0")
+        self.s_zamp_entry = ttk.Entry(self.square_frame, width=10, textvariable=self.s_zamp_var)
+        self.s_zamp_entry.grid(row=4, column=1)
+        ttk.Label(self.square_frame, text="Z period").grid(row=4, column=2, padx=(12,4))
+        self.s_zper_var = tk.StringVar(value="1.0")
+        self.s_zper_entry = ttk.Entry(self.square_frame, width=10, textvariable=self.s_zper_var)
+        self.s_zper_entry.grid(row=4, column=3)
+
+        # Status line
+        status_row = ttk.Frame(xyz); status_row.pack(fill=tk.X, pady=(4,0))
+        self.lbl_xyz_status = ttk.Label(status_row, text="Idle")
+        self.lbl_xyz_status.pack(side=tk.RIGHT)
+
+        self._on_circle_holdz(); self._on_square_holdz(); self._on_path_type()
 
         # Vicon (UDP 8889)
         vgp = ttk.Labelframe(parent, text="Vicon (UDP 8889)", padding=8)
@@ -417,214 +495,6 @@ class App(tk.Tk):
         ttk.Button(safe, text="Land", command=self.land).pack(side=tk.LEFT, padx=8)
 
     # ---- Flight Path tab ----
-    def _build_flight_path_tab(self, parent):
-        top = ttk.Frame(parent); top.pack(fill=tk.X)
-        ttk.Label(top, text="Rate (Hz)").pack(side=tk.LEFT)
-        self.fp_rate_var = tk.IntVar(value=PathCfg.DEFAULT_HZ)
-        ttk.Spinbox(top, from_=PathCfg.MIN_HZ, to=PathCfg.MAX_HZ, width=6,
-                    textvariable=self.fp_rate_var).pack(side=tk.LEFT, padx=(4,12))
-        self.lbl_fp_actual = ttk.Label(top, text="Actual: -- Hz")
-        self.lbl_fp_actual.pack(side=tk.LEFT)
-
-        base = ttk.Labelframe(parent, text="Base target", padding=8); base.pack(fill=tk.X, pady=(8,0))
-        row = ttk.Frame(base); row.pack(fill=tk.X)
-        ttk.Label(row, text="X").grid(row=0, column=0, padx=(0,4))
-        ttk.Label(row, text="Y").grid(row=0, column=2, padx=(12,4))
-        ttk.Label(row, text="Z").grid(row=0, column=4, padx=(12,4))
-        self.fp_x_var = tk.StringVar(value="0.0")
-        self.fp_y_var = tk.StringVar(value="0.0")
-        self.fp_z_var = tk.StringVar(value="0.0")
-        ttk.Entry(row, width=10, textvariable=self.fp_x_var).grid(row=0, column=1)
-        ttk.Entry(row, width=10, textvariable=self.fp_y_var).grid(row=0, column=3)
-        ttk.Entry(row, width=10, textvariable=self.fp_z_var).grid(row=0, column=5)
-        brow = ttk.Frame(base); brow.pack(fill=tk.X, pady=(4,0))
-        self.fp_btn_use_vicon = ttk.Button(brow, text="Use current XYZ",
-                                           command=self._fp_use_vicon, state=tk.DISABLED)
-        self.fp_btn_use_vicon.pack(side=tk.LEFT)
-        ttk.Button(brow, text="Send once", command=self._fp_send_once).pack(side=tk.LEFT, padx=6)
-
-        typef = ttk.Labelframe(parent, text="Path type", padding=8); typef.pack(fill=tk.X, pady=(8,0))
-        self.fp_type_var = tk.StringVar(value="none")
-        ttk.Radiobutton(typef, text="None", variable=self.fp_type_var, value="none",
-                        command=self._fp_on_type).pack(anchor=tk.W)
-        ttk.Radiobutton(typef, text="Circle", variable=self.fp_type_var, value="circle",
-                        command=self._fp_on_type).pack(anchor=tk.W)
-        ttk.Radiobutton(typef, text="Square", variable=self.fp_type_var, value="square",
-                        command=self._fp_on_type).pack(anchor=tk.W)
-
-        self.fp_params = ttk.Labelframe(parent, text="Path params", padding=8)
-        self.fp_params.pack(fill=tk.X, pady=(8,0))
-
-        # Circle parameters
-        self.fp_circle_frame = ttk.Frame(self.fp_params)
-        ttk.Label(self.fp_circle_frame, text="Center X").grid(row=0, column=0, padx=(0,4))
-        ttk.Label(self.fp_circle_frame, text="Center Y").grid(row=0, column=2, padx=(12,4))
-        self.fp_cx_var = tk.StringVar(value="0.0")
-        self.fp_cy_var = tk.StringVar(value="0.0")
-        ttk.Entry(self.fp_circle_frame, width=10, textvariable=self.fp_cx_var).grid(row=0, column=1)
-        ttk.Entry(self.fp_circle_frame, width=10, textvariable=self.fp_cy_var).grid(row=0, column=3)
-        ttk.Label(self.fp_circle_frame, text="Radius").grid(row=1, column=0, padx=(0,4))
-        self.fp_radius_var = tk.StringVar(value="0.5")
-        ttk.Entry(self.fp_circle_frame, width=10, textvariable=self.fp_radius_var).grid(row=1, column=1)
-        ttk.Label(self.fp_circle_frame, text="Speed").grid(row=1, column=2, padx=(12,4))
-        self.fp_cspeed_var = tk.StringVar(value="0.2")
-        ttk.Entry(self.fp_circle_frame, width=10, textvariable=self.fp_cspeed_var).grid(row=1, column=3)
-        self.fp_c_cw_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self.fp_circle_frame, text="Clockwise", variable=self.fp_c_cw_var).grid(row=2, column=0, columnspan=2, sticky=tk.W)
-        self.fp_c_holdz_var = tk.BooleanVar(value=True)
-        chk = ttk.Checkbutton(self.fp_circle_frame, text="Hold Z", variable=self.fp_c_holdz_var,
-                              command=self._fp_on_circle_holdz)
-        chk.grid(row=2, column=2, columnspan=2, sticky=tk.W)
-        ttk.Label(self.fp_circle_frame, text="Z amp").grid(row=3, column=0, padx=(0,4))
-        self.fp_c_zamp_var = tk.StringVar(value="0.0")
-        self.fp_c_zamp_entry = ttk.Entry(self.fp_circle_frame, width=10, textvariable=self.fp_c_zamp_var)
-        self.fp_c_zamp_entry.grid(row=3, column=1)
-        ttk.Label(self.fp_circle_frame, text="Z period").grid(row=3, column=2, padx=(12,4))
-        self.fp_c_zper_var = tk.StringVar(value="1.0")
-        self.fp_c_zper_entry = ttk.Entry(self.fp_circle_frame, width=10, textvariable=self.fp_c_zper_var)
-        self.fp_c_zper_entry.grid(row=3, column=3)
-
-        # Square parameters
-        self.fp_square_frame = ttk.Frame(self.fp_params)
-        ttk.Label(self.fp_square_frame, text="Center X").grid(row=0, column=0, padx=(0,4))
-        ttk.Label(self.fp_square_frame, text="Center Y").grid(row=0, column=2, padx=(12,4))
-        self.fp_sx_var = tk.StringVar(value="0.0")
-        self.fp_sy_var = tk.StringVar(value="0.0")
-        ttk.Entry(self.fp_square_frame, width=10, textvariable=self.fp_sx_var).grid(row=0, column=1)
-        ttk.Entry(self.fp_square_frame, width=10, textvariable=self.fp_sy_var).grid(row=0, column=3)
-        ttk.Label(self.fp_square_frame, text="Side length").grid(row=1, column=0, padx=(0,4))
-        self.fp_side_var = tk.StringVar(value="1.0")
-        ttk.Entry(self.fp_square_frame, width=10, textvariable=self.fp_side_var).grid(row=1, column=1)
-        ttk.Label(self.fp_square_frame, text="Speed").grid(row=1, column=2, padx=(12,4))
-        self.fp_sspeed_var = tk.StringVar(value="0.2")
-        ttk.Entry(self.fp_square_frame, width=10, textvariable=self.fp_sspeed_var).grid(row=1, column=3)
-        self.fp_s_cw_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self.fp_square_frame, text="Clockwise", variable=self.fp_s_cw_var).grid(row=2, column=0, columnspan=2, sticky=tk.W)
-        ttk.Label(self.fp_square_frame, text="Corner dwell (s)").grid(row=2, column=2, padx=(12,4))
-        self.fp_dwell_var = tk.StringVar(value="0.0")
-        ttk.Entry(self.fp_square_frame, width=10, textvariable=self.fp_dwell_var).grid(row=2, column=3)
-        self.fp_s_holdz_var = tk.BooleanVar(value=True)
-        chk2 = ttk.Checkbutton(self.fp_square_frame, text="Hold Z", variable=self.fp_s_holdz_var,
-                               command=self._fp_on_square_holdz)
-        chk2.grid(row=3, column=0, columnspan=2, sticky=tk.W)
-        ttk.Label(self.fp_square_frame, text="Z amp").grid(row=4, column=0, padx=(0,4))
-        self.fp_s_zamp_var = tk.StringVar(value="0.0")
-        self.fp_s_zamp_entry = ttk.Entry(self.fp_square_frame, width=10, textvariable=self.fp_s_zamp_var)
-        self.fp_s_zamp_entry.grid(row=4, column=1)
-        ttk.Label(self.fp_square_frame, text="Z period").grid(row=4, column=2, padx=(12,4))
-        self.fp_s_zper_var = tk.StringVar(value="1.0")
-        self.fp_s_zper_entry = ttk.Entry(self.fp_square_frame, width=10, textvariable=self.fp_s_zper_var)
-        self.fp_s_zper_entry.grid(row=4, column=3)
-
-        self._fp_on_circle_holdz(); self._fp_on_square_holdz(); self._fp_on_type()
-
-        actions = ttk.Labelframe(parent, text="Actions", padding=8); actions.pack(fill=tk.X, pady=(8,0))
-        self.btn_fp_start = ttk.Button(actions, text="Start path", command=self._fp_start)
-        self.btn_fp_start.pack(side=tk.LEFT)
-        self.btn_fp_stop = ttk.Button(actions, text="Stop path", command=self._fp_stop, state=tk.DISABLED)
-        self.btn_fp_stop.pack(side=tk.LEFT, padx=6)
-        self.lbl_fp_status = ttk.Label(actions, text="Idle")
-        self.lbl_fp_status.pack(side=tk.LEFT, padx=(12,0))
-
-    def _fp_on_type(self):
-        t = self.fp_type_var.get()
-        for f in (self.fp_circle_frame, self.fp_square_frame):
-            try: f.pack_forget()
-            except Exception: pass
-        if t == "circle":
-            self.fp_circle_frame.pack(fill=tk.X)
-        elif t == "square":
-            self.fp_square_frame.pack(fill=tk.X)
-
-    def _fp_on_circle_holdz(self):
-        state = tk.DISABLED if self.fp_c_holdz_var.get() else tk.NORMAL
-        self.fp_c_zamp_entry.configure(state=state)
-        self.fp_c_zper_entry.configure(state=state)
-
-    def _fp_on_square_holdz(self):
-        state = tk.DISABLED if self.fp_s_holdz_var.get() else tk.NORMAL
-        self.fp_s_zamp_entry.configure(state=state)
-        self.fp_s_zper_entry.configure(state=state)
-
-    def _fp_use_vicon(self):
-        vals = self._get_latest_vicon_xyz()
-        if not vals:
-            return
-        x, y, z = vals
-        self.fp_x_var.set(f"{x:.3f}")
-        self.fp_y_var.set(f"{y:.3f}")
-        self.fp_z_var.set(f"{z:.3f}")
-
-    def _fp_send_once(self):
-        try:
-            x = float(self.fp_x_var.get() or 0.0)
-            y = float(self.fp_y_var.get() or 0.0)
-            z = float(self.fp_z_var.get() or 0.0)
-        except Exception:
-            return
-        controller.send_xyz_once(x, y, z)
-
-    def _fp_start(self):
-        try:
-            rate = int(self.fp_rate_var.get())
-            if rate < PathCfg.MIN_HZ or rate > PathCfg.MAX_HZ:
-                raise ValueError
-            base = (
-                float(self.fp_x_var.get()),
-                float(self.fp_y_var.get()),
-                float(self.fp_z_var.get()),
-            )
-        except Exception:
-            messagebox.showerror("Invalid input", "Base XYZ or rate invalid")
-            return
-        ptype = self.fp_type_var.get()
-        params = {}
-        try:
-            if ptype == "circle":
-                params = {
-                    "center_x": float(self.fp_cx_var.get() or 0.0),
-                    "center_y": float(self.fp_cy_var.get() or 0.0),
-                    "radius": float(self.fp_radius_var.get()),
-                    "speed": float(self.fp_cspeed_var.get()),
-                    "clockwise": bool(self.fp_c_cw_var.get()),
-                    "hold_z": bool(self.fp_c_holdz_var.get()),
-                }
-                if params["radius"] <= 0 or params["speed"] <= 0:
-                    raise ValueError
-                if not params["hold_z"]:
-                    params["z_amp"] = float(self.fp_c_zamp_var.get() or 0.0)
-                    params["z_period"] = float(self.fp_c_zper_var.get() or 1.0)
-            elif ptype == "square":
-                params = {
-                    "center_x": float(self.fp_sx_var.get() or 0.0),
-                    "center_y": float(self.fp_sy_var.get() or 0.0),
-                    "side": float(self.fp_side_var.get()),
-                    "speed": float(self.fp_sspeed_var.get()),
-                    "clockwise": bool(self.fp_s_cw_var.get()),
-                    "dwell": float(self.fp_dwell_var.get() or 0.0),
-                    "hold_z": bool(self.fp_s_holdz_var.get()),
-                }
-                if params["side"] <= 0 or params["speed"] <= 0:
-                    raise ValueError
-                if not params["hold_z"]:
-                    params["z_amp"] = float(self.fp_s_zamp_var.get() or 0.0)
-                    params["z_period"] = float(self.fp_s_zper_var.get() or 1.0)
-        except Exception:
-            messagebox.showerror("Invalid input", "Path parameters invalid")
-            return
-
-        loop = controller.start_path(self.state_model, rate, base, ptype, params)
-        if loop:
-            self.path_loop = loop
-            self.btn_fp_start.config(state=tk.DISABLED)
-            self.btn_fp_stop.config(state=tk.NORMAL)
-
-    def _fp_stop(self):
-        controller.stop_path(self.state_model)
-        self.path_loop = None
-        self.btn_fp_start.config(state=tk.NORMAL)
-        self.btn_fp_stop.config(state=tk.DISABLED)
-
     def _apply_axes_bounds(self):
         if not self.ax3d:
             return
@@ -850,6 +720,38 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _on_path_type(self):
+        t = self.path_type_var.get()
+        for f in (self.circle_frame, self.square_frame):
+            try:
+                f.pack_forget()
+            except Exception:
+                pass
+        if t == "circle":
+            try:
+                self.c_cx_var.set(self.x_var.get())
+                self.c_cy_var.set(self.y_var.get())
+            except Exception:
+                pass
+            self.circle_frame.pack(fill=tk.X)
+        elif t == "square":
+            try:
+                self.s_cx_var.set(self.x_var.get())
+                self.s_cy_var.set(self.y_var.get())
+            except Exception:
+                pass
+            self.square_frame.pack(fill=tk.X)
+
+    def _on_circle_holdz(self):
+        state = tk.DISABLED if self.c_holdz_var.get() else tk.NORMAL
+        self.c_zamp_entry.configure(state=state)
+        self.c_zper_entry.configure(state=state)
+
+    def _on_square_holdz(self):
+        state = tk.DISABLED if self.s_holdz_var.get() else tk.NORMAL
+        self.s_zamp_entry.configure(state=state)
+        self.s_zper_entry.configure(state=state)
+
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
         """Compatibility alias so __init__ can call either name."""
@@ -989,31 +891,71 @@ class App(tk.Tk):
 
     # ---- XYZ → MATLAB ----
     def start_coords(self):
-        if self._coords_running: return
-        self._coords_running = True
-        self.btn_xyz_start.configure(state=tk.DISABLED); self.btn_xyz_stop.configure(state=tk.NORMAL)
-        self.log("Start sending XYZ to MATLAB")
-        t = threading.Thread(target=self._coords_loop, daemon=True); t.start(); self._coords_thread = t
+        if self.path_loop and self.path_loop.is_running():
+            controller.stop_path(self.state_model)
+            self.path_loop = None
+        try:
+            rate = int(self.xyz_hz_var.get())
+            if rate < PathCfg.MIN_HZ or rate > PathCfg.MAX_HZ:
+                raise ValueError
+            base = (
+                float(self.x_var.get()),
+                float(self.y_var.get()),
+                float(self.z_var.get()),
+            )
+        except Exception:
+            messagebox.showerror("Invalid input", "XYZ or rate invalid")
+            return
+        ptype = self.path_type_var.get()
+        params = {}
+        try:
+            if ptype == "circle":
+                params = {
+                    "center_x": float(self.c_cx_var.get() or base[0]),
+                    "center_y": float(self.c_cy_var.get() or base[1]),
+                    "radius": float(self.c_radius_var.get()),
+                    "speed": float(self.c_speed_var.get()),
+                    "clockwise": bool(self.c_cw_var.get()),
+                    "hold_z": bool(self.c_holdz_var.get()),
+                }
+                if params["radius"] <= 0 or params["speed"] <= 0:
+                    raise ValueError
+                if not params["hold_z"]:
+                    params["z_amp"] = float(self.c_zamp_var.get() or 0.0)
+                    params["z_period"] = float(self.c_zper_var.get() or 1.0)
+            elif ptype == "square":
+                params = {
+                    "center_x": float(self.s_cx_var.get() or base[0]),
+                    "center_y": float(self.s_cy_var.get() or base[1]),
+                    "side": float(self.s_side_var.get()),
+                    "speed": float(self.s_speed_var.get()),
+                    "clockwise": bool(self.s_cw_var.get()),
+                    "dwell": float(self.s_dwell_var.get() or 0.0),
+                    "hold_z": bool(self.s_holdz_var.get()),
+                }
+                if params["side"] <= 0 or params["speed"] <= 0 or params["dwell"] < 0:
+                    raise ValueError
+                if not params["hold_z"]:
+                    params["z_amp"] = float(self.s_zamp_var.get() or 0.0)
+                    params["z_period"] = float(self.s_zper_var.get() or 1.0)
+        except Exception:
+            messagebox.showerror("Invalid input", "Path parameters invalid")
+            return
+        loop = controller.start_path(self.state_model, rate, base, ptype, params)
+        if loop:
+            self.path_loop = loop
+            self.btn_xyz_start.configure(state=tk.DISABLED)
+            self.btn_xyz_stop.configure(state=tk.NORMAL)
+            self.log("Start sending XYZ to MATLAB")
 
     def stop_coords(self):
-        if not self._coords_running: return
-        self._coords_running = False
-        self.btn_xyz_start.configure(state=tk.NORMAL); self.btn_xyz_stop.configure(state=tk.DISABLED)
+        if self.path_loop:
+            controller.stop_path(self.state_model)
+            self.path_loop = None
+        self.btn_xyz_start.configure(state=tk.NORMAL)
+        self.btn_xyz_stop.configure(state=tk.DISABLED)
+        self.lbl_xyz_status.configure(text="Idle")
         self.log("Stop sending XYZ")
-
-    def _coords_loop(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            while self._coords_running:
-                try:
-                    x = float(self.x_var.get() or 0.0); y = float(self.y_var.get() or 0.0); z = float(self.z_var.get() or 0.0)
-                    sock.sendto(struct.pack("<3f", x, y, z), ("127.0.0.1", UDP_COORD_PORT))
-                except Exception:
-                    pass
-                hz = max(1, int(self.xyz_hz_var.get() or 20))
-                time.sleep(1.0/float(hz))
-        finally:
-            sock.close()
 
     # ---- Setpoint loop (CF) ----
     def _sp_start(self):
@@ -1247,7 +1189,6 @@ class App(tk.Tk):
             fresh = self._vrx_running and (self._now() - self._vicon_ts) <= 1.0
             state = "normal" if fresh else "disabled"
             self.btn_use_vicon.configure(state=state)
-            self.fp_btn_use_vicon.configure(state=state)
         except Exception:
             pass
 
@@ -1331,35 +1272,26 @@ class App(tk.Tk):
         except Exception:
             pass
 
-        # flight path status
+
+        # flight path status (~2 Hz)
+        now = perf_counter()
         try:
             if self.path_loop and self.path_loop.is_running():
-                ar = self.path_loop.get_actual_rate()
-                self.lbl_fp_actual.configure(text=f"Actual: {ar:.1f} Hz")
-                with self.state_model.lock:
-                    t = float(self.state_model.path_elapsed)
-                    x, y, z = self.state_model.path_last_xyz
-                    ptype = self.state_model.path_type
-                    ang = self.state_model.path_angle
-                    idx = self.state_model.path_index
-                if ptype == "circle":
-                    deg = (math.degrees(ang) % 360.0)
-                    self.lbl_fp_status.configure(
-                        text=f"Streaming Circle | t = {t:.1f} s | rate = {ar:.1f} Hz | XYZ = ({x:.2f}, {y:.2f}, {z:.2f}) | angle = {deg:.1f}°"
+                if now - getattr(self, "_last_path_status", 0.0) >= 0.5:
+                    ar = self.path_loop.get_actual_rate()
+                    with self.state_model.lock:
+                        t = float(self.state_model.path_elapsed)
+                        x, y, z = self.state_model.path_last_xyz
+                        ptype = self.state_model.path_type
+                    self.lbl_xyz_status.configure(
+                        text=f"Streaming {ptype.title()} | t={t:.1f} s | rate={ar:.1f} Hz | XYZ=({x:.2f}, {y:.2f}, {z:.2f})",
                     )
-                elif ptype == "square":
-                    self.lbl_fp_status.configure(
-                        text=f"Streaming Square | t = {t:.1f} s | rate = {ar:.1f} Hz | XYZ = ({x:.2f}, {y:.2f}, {z:.2f}) | idx = {idx:.1f}"
-                    )
-                else:
-                    self.lbl_fp_status.configure(
-                        text=f"Streaming | t = {t:.1f} s | rate = {ar:.1f} Hz | XYZ = ({x:.2f}, {y:.2f}, {z:.2f})"
-                    )
+                    self._last_path_status = now
             else:
-                self.lbl_fp_actual.configure(text="Actual: -- Hz")
-                self.lbl_fp_status.configure(text="Idle")
+                self.lbl_xyz_status.configure(text="Idle")
         except Exception:
             pass
+
 
         # record only selected parameters
         self._append_log_params_sample()
@@ -1410,7 +1342,6 @@ class App(tk.Tk):
 
     def on_close(self):
         try:
-            self._coords_running = False
             if self.setpoints: self.setpoints.stop()
             if self.pwm_loop: self.pwm_loop.stop()
             if self.path_loop:
