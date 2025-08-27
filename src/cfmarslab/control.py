@@ -12,6 +12,8 @@ from .realtime import Realtime
 from .config import RT, Safety, Landing, Rates, PreviewCfg
 from .link import LinkManager
 
+logger = logging.getLogger(__name__)
+
 # Global loop references to ensure only one active at a time
 _setpoint_loop: Optional['SetpointLoop'] = None
 _pwm_loop: Optional['PWMSetpointLoop'] = None
@@ -669,6 +671,13 @@ def zero_output(mode: str, link: LinkManager) -> None:
                 pass
 
 
+def send_rpyt_zero(commander):
+    try:
+        commander.send_setpoint(0.0, 0.0, 0.0, 0)
+    except Exception:
+        logger.exception("Failed to send neutral RPYT in Land")
+
+
 def smooth_landing(target, mode: str = "rpyt", *, start_thrust: int | None = None,
                    mid_thrust: int = Landing.MID_THRUST,
                    ramp1_time: float = Landing.RAMP1_TIME,
@@ -774,12 +783,17 @@ def land(mode: str, state: SharedState, link: LinkManager):
         logging.error("No CF for landing")
         return False
     if mode == "rpyt":
+        commander = link.get_commander() if link else None
+        if commander is None:
+            logging.error("No commander for landing")
+            return False
+        with state.lock:
+            start_thr = int(state.rpyth.get("thrust", 0))
+        send_rpyt_zero(commander)
         if _setpoint_loop and _setpoint_loop.is_running():
-            with state.lock:
-                start_thr = int(state.rpyth.get("thrust", 0))
             _setpoint_loop.stop()
-            smooth_landing(cf.commander, "rpyt", start_thrust=start_thr)
             _setpoint_loop = None
+        smooth_landing(commander, "rpyt", start_thrust=start_thr)
     else:
         last = [0, 0, 0, 0]
         if _pwm_loop and _pwm_loop.is_running():

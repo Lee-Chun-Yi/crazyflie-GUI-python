@@ -1250,8 +1250,10 @@ class App(tk.Tk):
                 self.log(f"Emergency stop failed: {e}")
 
     def land(self):
-        mode = "pwm" if self._is_4pid_mode_active() else "rpyt"
-        controller.land(mode, self.state_model, self.link)
+        if self._is_4pid_mode_active():
+            self._pwm_stop()
+        else:
+            self._sp_stop()
 
     def _on_restart(self):
         threading.Thread(target=self._restart_worker, daemon=True).start()
