@@ -53,6 +53,7 @@ class App(tk.Tk):
         self.cf = None
 
         self.path_loop = None
+        self._last_apply_ts = 0.0
 
         self._log_q = queue.Queue()
         self.enqueue_log = lambda s: self._log_q.put(s if isinstance(s, str) else str(s))
@@ -727,6 +728,13 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _set_frame_state(self, frame, state):
+        for child in frame.winfo_children():
+            try:
+                child.configure(state=state)
+            except Exception:
+                pass
+
     def _on_path_type(self):
         t = self.path_type_var.get()
         for f in (self.circle_frame, self.square_frame):
@@ -735,6 +743,8 @@ class App(tk.Tk):
             except Exception:
                 pass
         if t == "circle":
+            self._set_frame_state(self.circle_frame, tk.NORMAL)
+            self._set_frame_state(self.square_frame, tk.DISABLED)
             try:
                 self.c_cx_var.set(self.x_var.get())
                 self.c_cy_var.set(self.y_var.get())
@@ -742,12 +752,17 @@ class App(tk.Tk):
                 pass
             self.circle_frame.pack(fill=tk.X)
         elif t == "square":
+            self._set_frame_state(self.square_frame, tk.NORMAL)
+            self._set_frame_state(self.circle_frame, tk.DISABLED)
             try:
                 self.s_cx_var.set(self.x_var.get())
                 self.s_cy_var.set(self.y_var.get())
             except Exception:
                 pass
             self.square_frame.pack(fill=tk.X)
+        else:
+            self._set_frame_state(self.circle_frame, tk.DISABLED)
+            self._set_frame_state(self.square_frame, tk.DISABLED)
 
     def _on_circle_holdz(self):
         state = tk.DISABLED if self.c_holdz_var.get() else tk.NORMAL
@@ -769,14 +784,128 @@ class App(tk.Tk):
                     pass
                 setattr(self, attr, None)
 
+    def _redraw_preview(self, ptype: str, x: float, y: float, z: float, params: dict):
+        self._ensure_3d_canvas()
+        if not self.ax3d:
+            return
+        path_pts: list[tuple[float, float, float]] = []
+        extra_pts: list[tuple[float, float, float]] = []
+        if ptype == "circle":
+            path_pts = controller.preview_points_circle(
+                params.get("center_x", x),
+                params.get("center_y", y),
+                z,
+                params.get("radius", 0.0),
+                params.get("clockwise", True),
+                params.get("hold_z", True),
+                params.get("z_amp", 0.0),
+                params.get("z_period", 1.0),
+            )
+            extra_pts = [(params.get("center_x", x), params.get("center_y", y), z)]
+        elif ptype == "square":
+            path_pts = controller.preview_points_square(
+                params.get("center_x", x),
+                params.get("center_y", y),
+                z,
+                params.get("side", params.get("side_length", 0.0)),
+                params.get("clockwise", True),
+                params.get("hold_z", True),
+                params.get("z_amp", 0.0),
+                params.get("z_period", 1.0),
+            )
+            half = params.get("side", params.get("side_length", 0.0)) / 2.0
+            cx = params.get("center_x", x)
+            cy = params.get("center_y", y)
+            extra_pts = [
+                (cx + half, cy + half, z),
+                (cx + half, cy - half, z),
+                (cx - half, cy - half, z),
+                (cx - half, cy + half, z),
+            ]
+
+        # target
+        if self._preview_target is None:
+            self._preview_target = self.ax3d.scatter(
+                [x], [y], [z], color=PreviewCfg.TARGET_COLOR, s=PreviewCfg.TARGET_SIZE
+            )
+        else:
+            self._preview_target._offsets3d = ([x], [y], [z])
+
+        # path line
+        if path_pts:
+            xs, ys, zs = zip(*path_pts)
+            if self._preview_path is None:
+                (self._preview_path,) = self.ax3d.plot(xs, ys, zs, color=PreviewCfg.PATH_COLOR)
+            else:
+                self._preview_path.set_data(xs, ys)
+                self._preview_path.set_3d_properties(zs)
+        else:
+            if self._preview_path is not None:
+                self._preview_path.set_data([], [])
+                self._preview_path.set_3d_properties([])
+
+        # extra markers
+        if extra_pts:
+            xs = [p[0] for p in extra_pts]
+            ys = [p[1] for p in extra_pts]
+            zs = [p[2] for p in extra_pts]
+            if self._preview_extra is None:
+                marker = "x" if len(extra_pts) == 1 else None
+                self._preview_extra = self.ax3d.scatter(
+                    xs, ys, zs, color=PreviewCfg.CENTER_COLOR, marker=marker
+                )
+            else:
+                self._preview_extra._offsets3d = (xs, ys, zs)
+        else:
+            if self._preview_extra is not None:
+                self._preview_extra._offsets3d = ([], [], [])
+
+        all_pts = path_pts + [(x, y, z)] + extra_pts
+        xs = [p[0] for p in all_pts] or [0.0]
+        ys = [p[1] for p in all_pts] or [0.0]
+        zs = [p[2] for p in all_pts] or [0.0]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        zmin, zmax = min(zs), max(zs)
+        rng = max(xmax - xmin, ymax - ymin, zmax - zmin)
+        if rng <= 0:
+            rng = 1.0
+        half = rng / 2.0 * (1 + PreviewCfg.AXIS_MARGIN_FRAC)
+        mx = (xmax + xmin) / 2.0
+        my = (ymax + ymin) / 2.0
+        mz = (zmax + zmin) / 2.0
+        self.ax3d.set_xlim(mx - half, mx + half)
+        self.ax3d.set_ylim(my - half, my + half)
+        self.ax3d.set_zlim(mz - half, mz + half)
+        if self.canvas3d:
+            self.canvas3d.draw_idle()
+
+
     def _on_apply_path(self):
+        now = self._now()
+        if now - getattr(self, "_last_apply_ts", 0.0) < 0.1:
+            return
+        self._last_apply_ts = now
+        self._on_path_type()
+
+        vals = self._get_latest_vicon_xyz()
+        if vals:
+            try:
+                self.x_var.set(f"{vals[0]:.3f}")
+                self.y_var.set(f"{vals[1]:.3f}")
+                self.z_var.set(f"{vals[2]:.3f}")
+            except Exception:
+                pass
+
         try:
             x = float(self.x_var.get())
             y = float(self.y_var.get())
             z = float(self.z_var.get())
+            rate = int(float(self.xyz_hz_var.get()))
         except Exception:
-            self.lbl_xyz_error.configure(text="Invalid XYZ")
+            self.lbl_xyz_error.configure(text="Invalid XYZ or rate")
             return
+
         ptype = self.path_type_var.get()
         params: dict[str, float] = {}
         try:
@@ -819,98 +948,33 @@ class App(tk.Tk):
             self.lbl_xyz_error.configure(text="Invalid input")
             return
 
+        if rate < PathCfg.MIN_HZ or rate > PathCfg.MAX_HZ:
+            self.lbl_xyz_error.configure(text="Rate out of range")
+            return
+
         with self.state_model.lock:
+            self.state_model.xyz_target = (x, y, z)
+            self.state_model.rate_hz = rate
             self.state_model.path_type = ptype
             self.state_model.path_params = params
-            self.state_model.user_xyz = (x, y, z)
+            running = bool(self.state_model.stream_running)
 
         self.lbl_xyz_error.configure(text="")
-        self._ensure_3d_canvas()
-        if not self.ax3d:
-            return
-        self._clear_preview()
-        if ptype == "circle":
-            pts = controller.preview_points_circle(
-                params["center_x"],
-                params["center_y"],
-                z,
-                params["radius"],
-                params["clockwise"],
-                params["hold_z"],
-                params.get("z_amp", 0.0),
-                params.get("z_period", 1.0),
-            )
-            xs, ys, zs = zip(*pts)
-            self._preview_path, = self.ax3d.plot(xs, ys, zs, color=PreviewCfg.PATH_COLOR)
-            self._preview_target = self.ax3d.scatter([x], [y], [z], color=PreviewCfg.TARGET_COLOR,
-                                                     s=PreviewCfg.TARGET_SIZE)
-            cx, cy = params["center_x"], params["center_y"]
-            self._preview_extra = self.ax3d.scatter([cx], [cy], [z], color=PreviewCfg.CENTER_COLOR, marker="x")
-            extra_pts = [(cx, cy, z)]
-        elif ptype == "square":
-            pts = controller.preview_points_square(
-                params["center_x"],
-                params["center_y"],
-                z,
-                params["side"],
-                params["clockwise"],
-                params["hold_z"],
-                params.get("z_amp", 0.0),
-                params.get("z_period", 1.0),
-            )
-            xs, ys, zs = zip(*pts)
-            self._preview_path, = self.ax3d.plot(xs, ys, zs, color=PreviewCfg.PATH_COLOR)
-            self._preview_target = self.ax3d.scatter([x], [y], [z], color=PreviewCfg.TARGET_COLOR,
-                                                     s=PreviewCfg.TARGET_SIZE)
-            half = params["side"] / 2.0
-            verts = [
-                (params["center_x"] + half, params["center_y"] + half, z),
-                (params["center_x"] + half, params["center_y"] - half, z),
-                (params["center_x"] - half, params["center_y"] - half, z),
-                (params["center_x"] - half, params["center_y"] + half, z),
-            ]
-            self._preview_extra = self.ax3d.scatter(
-                [v[0] for v in verts], [v[1] for v in verts], [v[2] for v in verts],
-                color=PreviewCfg.CENTER_COLOR,
-            )
-            extra_pts = verts
-        else:
-            pts = controller.preview_points_none(x, y, z)
-            xs, ys, zs = zip(*pts)
-            self._preview_target = self.ax3d.scatter(xs, ys, zs, color=PreviewCfg.TARGET_COLOR,
-                                                     s=PreviewCfg.TARGET_SIZE)
-            extra_pts = []
+        self._redraw_preview(ptype, x, y, z, params)
 
-        all_pts = list(pts) + [(x, y, z)] + list(extra_pts)
-        xs = [p[0] for p in all_pts]
-        ys = [p[1] for p in all_pts]
-        zs = [p[2] for p in all_pts]
-        xmin, xmax = min(xs), max(xs)
-        ymin, ymax = min(ys), max(ys)
-        zmin, zmax = min(zs), max(zs)
-        rng = max(xmax - xmin, ymax - ymin, zmax - zmin)
-        if rng <= 0:
-            rng = 1.0
-        half = rng / 2.0 * (1 + PreviewCfg.AXIS_MARGIN_FRAC)
-        mx = (xmax + xmin) / 2.0
-        my = (ymax + ymin) / 2.0
-        mz = (zmax + zmin) / 2.0
-        self.ax3d.set_xlim(mx - half, mx + half)
-        self.ax3d.set_ylim(my - half, my + half)
-        self.ax3d.set_zlim(mz - half, mz + half)
-        if self.canvas3d:
-            self.canvas3d.draw_idle()
+        label_ptype = ptype.capitalize() if ptype != "none" else "None"
+        self.lbl_xyz_status.configure(
+            text=f"Ready: {label_ptype} | XYZ=({x:.2f}, {y:.2f}, {z:.2f})"
+        )
 
-        if ptype == "circle":
-            self.lbl_xyz_status.configure(
-                text=f"Ready: Circle (R={params['radius']}, cx={params['center_x']}, cy={params['center_y']})"
-            )
-        elif ptype == "square":
-            self.lbl_xyz_status.configure(
-                text=f"Ready: Square (L={params['side']}, cx={params['center_x']}, cy={params['center_y']})"
-            )
-        else:
-            self.lbl_xyz_status.configure(text="Ready: None")
+        if running:
+            controller.hot_update({
+                "xyz": (x, y, z),
+                "rate_hz": rate,
+                "path_type": ptype,
+                "path_params": params,
+            })
+
 
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
@@ -1054,22 +1118,7 @@ class App(tk.Tk):
         if self.path_loop and self.path_loop.is_running():
             controller.stop_path(self.state_model)
             self.path_loop = None
-        try:
-            rate = int(self.xyz_hz_var.get())
-            if rate < PathCfg.MIN_HZ or rate > PathCfg.MAX_HZ:
-                raise ValueError
-            base = (
-                float(self.x_var.get()),
-                float(self.y_var.get()),
-                float(self.z_var.get()),
-            )
-        except Exception:
-            messagebox.showerror("Invalid input", "XYZ or rate invalid")
-            return
-        with self.state_model.lock:
-            ptype = self.state_model.path_type
-            params = dict(self.state_model.path_params)
-        loop = controller.start_path(self.state_model, rate, base, ptype, params)
+        loop = controller.start_path(self.state_model)
         if loop:
             self.path_loop = loop
             self.btn_xyz_start.configure(state=tk.DISABLED)
