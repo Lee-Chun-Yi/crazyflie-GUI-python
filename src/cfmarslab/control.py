@@ -7,6 +7,7 @@ from queue import Queue
 from collections import deque
 
 from .models import SharedState, set_last_stream_xyz, get_last_stream_xyz as _get_last_stream_xyz
+from . import models
 from .utils import set_realtime_priority
 from .realtime import Realtime
 from .config import RT, Safety, Landing, Rates, PreviewCfg
@@ -182,10 +183,13 @@ class UDPInput:
                             offset = int(getattr(self.state, "throttle_offset", 40000))
                         th = th_raw + offset
                         th = max(0, min(65535, th))
+                        if not models.get_accept_udp_8888():
+                            continue
                         with self.state.lock:
                             self.state.rpyth.update({
                                 "roll": r, "pitch": p, "yaw": y, "thrust": th
                             })
+                        models.set_last_rpyt((r, p, y, th))
             except BlockingIOError:
                 pass
             except Exception:
@@ -477,7 +481,8 @@ class SetpointLoop(BaseLoop):
                 th = 0
             if th <= self.min_thrust:
                 r = p = y = 0.0
-    
+        models.set_last_rpyt((r, p, y, th))
+
         cf = getattr(self.link, "cf", None)
         if cf is not None:
             self._sender.enqueue(cf.commander.send_setpoint, r, p, y, th)
@@ -801,12 +806,18 @@ def start_mode(mode: str, state: SharedState, link: LinkManager, *, rate_hz: int
     with state.lock:
         state.active_mode = mode
         state.is_flying.set()
+    models.set_accept_udp_8888(True)
     return loop
 
 
 def land(mode: str, state: SharedState, link: LinkManager):
     """Perform smooth landing then send final zero and stop loops."""
     global _setpoint_loop, _pwm_loop, _pwm_udp
+    models.set_accept_udp_8888(False)
+    models.set_last_rpyt((0.0, 0.0, 0.0, 0.0))
+    with state.lock:
+        state.rpyth.update({"roll": 0.0, "pitch": 0.0, "yaw": 0.0, "thrust": 0.0})
+        state.using_udp_8888 = False
     cf = link.get_cf() if link else None
     if cf is None:
         logging.error("No CF for landing")
@@ -848,7 +859,6 @@ def land(mode: str, state: SharedState, link: LinkManager):
     with state.lock:
         state.active_mode = None
         state.is_flying.clear()
-
     clear_udp_8888()
     send_udp_rpyt_zero()
     if mode == "rpyt":
@@ -915,15 +925,12 @@ def send_xyz_once(x: float, y: float, z: float):
             pass
 
 
-def clear_udp_8888(force: bool = True) -> None:
-    """Best-effort: stop any receivers/sockets bound to UDP 8888 and free it."""
+def stop_udp8888_receivers_if_any() -> None:
+    """Stop any internal threads reading from UDP port 8888."""
     global _pwm_udp
-    state_ref = None
     try:
-        # Stop any registered UDPInput listeners
         for udp in list(_udp_inputs):
             try:
-                state_ref = getattr(udp, "state", state_ref)
                 th = getattr(udp, "_thread", None)
                 udp.stop()
                 if th:
@@ -933,8 +940,6 @@ def clear_udp_8888(force: bool = True) -> None:
             finally:
                 if udp in _udp_inputs:
                     _udp_inputs.remove(udp)
-
-        # Stop PWM UDP receiver if running
         if _pwm_udp:
             try:
                 th = getattr(_pwm_udp, "_thread", None)
@@ -943,24 +948,26 @@ def clear_udp_8888(force: bool = True) -> None:
                     th.join(timeout=0.5)
             except Exception:
                 pass
-            _pwm_udp = None
+            finally:
+                _pwm_udp = None
+    except Exception:
+        pass
 
-        # Clear state flag if available
-        if state_ref:
-            try:
-                with state_ref.lock:
-                    state_ref.using_udp_8888 = False
-            except Exception:
-                pass
 
-        # Fallback bind+close to ensure port is released
-        import socket, contextlib
-        with contextlib.suppress(Exception):
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.bind(("127.0.0.1", 8888))
-            s.close()
+def close_udp8888_sockets_if_any() -> None:
+    """Bind and close port 8888 to ensure it's free."""
+    import socket, contextlib
+    with contextlib.suppress(Exception):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind(("127.0.0.1", 8888))
+        s.close()
 
-        # On Windows attempt to kill lingering holders
+
+def clear_udp_8888(force: bool = True) -> None:
+    """Best-effort: stop any receivers/sockets bound to UDP 8888 and free it."""
+    try:
+        stop_udp8888_receivers_if_any()
+        close_udp8888_sockets_if_any()
         try:
             from .utils import clear_udp_ports_windows
             clear_udp_ports_windows([8888])
@@ -970,35 +977,38 @@ def clear_udp_8888(force: bool = True) -> None:
         logger.exception("clear_udp_8888 failed")
 
 
-def clear_udp_8888_with_neutral(link_mgr: LinkManager | None, state: SharedState | None) -> None:
-    """Send a neutral RPYT frame once, then clear UDP port 8888.
+def clear_udp_8888_with_neutral(link_mgr: LinkManager | None) -> None:
+    """Send a neutral RPYT frame once, then clear UDP port 8888."""
+    models.set_accept_udp_8888(False)
 
-    Args:
-        link_mgr: LinkManager instance to access the commander.
-        state: SharedState for flag updates (optional).
-    """
-
-    # 1) attempt to send neutral setpoint
+    # 1) immediate neutral frame
     try:
         cmdr = link_mgr.get_commander() if link_mgr else None
         if cmdr:
             cmdr.send_setpoint(0.0, 0.0, 0.0, 0)
-            print("[UDP] Neutral RPYT (0,0,0,0) sent before clearing port 8888.")
-    except Exception as e:  # noqa: BLE001
-        print(f"[UDP] Failed to send neutral before clear: {e}")
+    except Exception:
+        pass
 
-    # 2) clear the port using existing helper
+    # 2) stop listeners and free port
+    stop_udp8888_receivers_if_any()
+    close_udp8888_sockets_if_any()
+
+    # 3) force-clear last values and state
+    models.set_last_rpyt((0.0, 0.0, 0.0, 0.0))
+    if link_mgr and getattr(link_mgr, "state", None):
+        try:
+            with link_mgr.state.lock:
+                link_mgr.state.rpyth.update({"roll": 0.0, "pitch": 0.0, "yaw": 0.0, "thrust": 0.0})
+                link_mgr.state.using_udp_8888 = False
+        except Exception:
+            pass
+
+    # 4) actively free the port and sweep on Windows
     try:
-        clear_udp_8888()
-        if state:
-            try:
-                with state.lock:
-                    state.using_udp_8888 = False
-            except Exception:
-                pass
-        print("[UDP] Port 8888 cleared.")
-    except Exception as e:  # noqa: BLE001
-        print(f"[UDP] Failed to clear port 8888: {e}")
+        from .utils import clear_udp_ports_windows
+        clear_udp_ports_windows([8888])
+    except Exception:
+        pass
 
 
 def send_udp_rpyt_zero():

@@ -1,11 +1,12 @@
 import socket, struct, threading, time, queue, logging, sys, traceback
 from time import perf_counter
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext
 from collections import deque
 import math
 
 from .models import SharedState, get_last_stream_xyz
+from . import models
 from .config import load_config, save_config, Rates, PathCfg, PreviewCfg
 from .control import UDPInput
 from . import control as controller
@@ -1189,6 +1190,10 @@ class App(tk.Tk):
     def _sp_start(self):
         if self.pwm_loop and getattr(self.pwm_loop, "is_running", lambda: False)():
             self._pwm_stop()
+        try:
+            self.udp.start()
+        except Exception:
+            pass
         loop = controller.start_mode("rpyt", self.state_model, self.link, rate_hz=int(self.sp_hz_var.get()))
         if loop:
             self.setpoints = loop
@@ -1308,13 +1313,12 @@ class App(tk.Tk):
             self._sp_stop()
 
     def _on_clear_udp8888(self):
-        if not messagebox.askyesno(
-            "Clear UDP 8888",
-            "Send neutral RPYT=0 and release port 8888?",
-        ):
-            return
-        controller.clear_udp_8888_with_neutral(self.link, self.state_model)
-        self._flash_status("Neutral sent + Port 8888 cleared.")
+        controller.clear_udp_8888_with_neutral(self.link)
+        r, p, y, t = models.get_last_rpyt()
+        self.lbl_rpyt.config(
+            text=f"R: {r:+.2f}°  P: {p:+.2f}°  Y: {y:+.2f}/s  T: {int(t)}"
+        )
+        self._console_log("[UDP] Neutral sent and port 8888 cleared; RPYT reset to zero.")
 
     def _on_restart(self):
         uri = str(self._current_uri())
@@ -1339,24 +1343,23 @@ class App(tk.Tk):
                 sample["z"] = float(self.z_var.get() or 0.0)
         except Exception:
             pass
-        # rotations / setpoints from SharedState.rpyth (roll/pitch/yaw/thrust)
+        # rotations / setpoints from last RPYT
         try:
-            with self.state_model.lock:
-                rpyth = self.state_model.rpyth
-                if self.log_opts["rot_x"].get():
-                    sample["rot_x"] = float(rpyth.get("roll", 0.0))
-                if self.log_opts["rot_y"].get():
-                    sample["rot_y"] = float(rpyth.get("pitch", 0.0))
-                if self.log_opts["rot_z"].get():
-                    sample["rot_z"] = float(rpyth.get("yaw", 0.0))
-                if self.log_opts.get("roll") and self.log_opts["roll"].get():
-                    sample["roll"] = float(rpyth.get("roll", 0.0))
-                if self.log_opts.get("pitch") and self.log_opts["pitch"].get():
-                    sample["pitch"] = float(rpyth.get("pitch", 0.0))
-                if self.log_opts.get("yaw") and self.log_opts["yaw"].get():
-                    sample["yaw"] = float(rpyth.get("yaw", 0.0))
-                if self.log_opts.get("thrust") and self.log_opts["thrust"].get():
-                    sample["thrust"] = float(rpyth.get("thrust", 0.0))
+            r, p, y, t = models.get_last_rpyt()
+            if self.log_opts["rot_x"].get():
+                sample["rot_x"] = float(r)
+            if self.log_opts["rot_y"].get():
+                sample["rot_y"] = float(p)
+            if self.log_opts["rot_z"].get():
+                sample["rot_z"] = float(y)
+            if self.log_opts.get("roll") and self.log_opts["roll"].get():
+                sample["roll"] = float(r)
+            if self.log_opts.get("pitch") and self.log_opts["pitch"].get():
+                sample["pitch"] = float(p)
+            if self.log_opts.get("yaw") and self.log_opts["yaw"].get():
+                sample["yaw"] = float(y)
+            if self.log_opts.get("thrust") and self.log_opts["thrust"].get():
+                sample["thrust"] = float(t)
         except Exception:
             pass
         if sample:
@@ -1410,14 +1413,11 @@ class App(tk.Tk):
         self.lbl_rssi.config(text=f"RSSI: {rssi_dbm}" if rssi_dbm==rssi_dbm else "RSSI: --")
 
         try:
+            r, p, y, t = models.get_last_rpyt()
             with self.state_model.lock:
-                rpyth = dict(self.state_model.rpyth)
                 offset = int(getattr(self.state_model, "throttle_offset", 40000))
             self.lbl_rpyt.config(
-                text=(
-                    f"R: {rpyth['roll']:.2f}°  P: {rpyth['pitch']:.2f}°  "
-                    f"Y: {rpyth['yaw']:.2f}/s  T: {int(rpyth['thrust'])}"
-                )
+                text=f"R: {r:+.2f}°  P: {p:+.2f}°  Y: {y:+.2f}/s  T: {int(t)}"
             )
             if self.offset_var.get() != str(offset):
                 self.offset_var.set(str(offset))

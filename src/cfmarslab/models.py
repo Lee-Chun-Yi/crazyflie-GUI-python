@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from threading import Event, Lock
 from collections import deque
 from typing import Dict, Deque, Tuple, Optional
+import threading
 
 from .config import PathCfg
 
@@ -51,16 +52,43 @@ class SharedState:
 
 # --- last streamed XYZ for UI marker -------------------------------------
 _last_stream_xyz: Optional[Tuple[float, float, float]] = None
-_lock = Lock()
+_stream_lock = Lock()
+
+# --- UDP 8888 gating and last RPYT --------------------------------------
+_lock = threading.Lock()
+_accept_udp_8888 = False
+_last_rpyt = (0.0, 0.0, 0.0, 0.0)
+
+
+def set_accept_udp_8888(v: bool):
+    global _accept_udp_8888
+    with _lock:
+        _accept_udp_8888 = bool(v)
+
+
+def get_accept_udp_8888():
+    with _lock:
+        return _accept_udp_8888
+
+
+def set_last_rpyt(rpyt_tuple):
+    global _last_rpyt
+    with _lock:
+        _last_rpyt = tuple(float(x) for x in rpyt_tuple)
+
+
+def get_last_rpyt():
+    with _lock:
+        return _last_rpyt
 
 
 def set_last_stream_xyz(v: Optional[Tuple[float, float, float]]) -> None:
     """Atomically store the most recent XYZ sent to MATLAB."""
-    with _lock:
+    with _stream_lock:
         globals()["_last_stream_xyz"] = v
 
 
 def get_last_stream_xyz() -> Optional[Tuple[float, float, float]]:
     """Return the last streamed XYZ, or None if unavailable."""
-    with _lock:
+    with _stream_lock:
         return _last_stream_xyz
