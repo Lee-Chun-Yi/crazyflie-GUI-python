@@ -367,7 +367,11 @@ class SetpointLoop(BaseLoop):
                 th = 0
             if th <= self.min_thrust:
                 r = p = y = 0.0
-        self._sender.enqueue(self.link.send_setpoint, r, p, y, th)
+    
+        cf = getattr(self.link, "cf", None)
+        if cf:
+            self._sender.enqueue(cf.commander.send_setpoint, r, p, y, th)
+
 
 
 class PWMSetpointLoop(BaseLoop):
