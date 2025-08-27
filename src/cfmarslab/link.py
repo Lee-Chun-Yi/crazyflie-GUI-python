@@ -69,7 +69,8 @@ class LinkManager:
     def get_cf(self) -> Optional[Crazyflie]:
         return self.cf
 
-    def get_commander(self):
+    def get_commander(self) -> Optional[object]:
+        """Return the Crazyflie commander if available, else None."""
         cf = self.cf
         return cf.commander if cf else None
 
