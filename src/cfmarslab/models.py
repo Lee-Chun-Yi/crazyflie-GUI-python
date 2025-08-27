@@ -30,8 +30,8 @@ class SharedState:
     # Ring buffer for logs (UI plots)
     log_buf: Deque = field(default_factory=lambda: deque(maxlen=2000))
 
-    # --- Flight path streaming state ---
-    path_running: bool = False
+    # --- XYZ path streaming state ---
+    stream_running: bool = False
     path_type: str = "none"      # "none" | "circle" | "square"
     path_params: Dict[str, float] = field(default_factory=dict)
     path_rate_hz: int = 20
