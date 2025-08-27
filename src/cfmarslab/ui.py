@@ -917,22 +917,26 @@ class App(tk.Tk):
         self._last_apply_ts = now
         self._on_path_type()
 
-        vals = self._get_latest_vicon_xyz()
-        if vals:
-            try:
-                self.x_var.set(f"{vals[0]:.3f}")
-                self.y_var.set(f"{vals[1]:.3f}")
-                self.z_var.set(f"{vals[2]:.3f}")
-            except Exception:
-                pass
+        with self.state_model.lock:
+            last_x, last_y, last_z = self.state_model.xyz_target
 
         try:
             x = float(self.x_var.get())
+        except Exception:
+            x = last_x
+        try:
             y = float(self.y_var.get())
+        except Exception:
+            y = last_y
+        try:
             z = float(self.z_var.get())
+        except Exception:
+            z = last_z
+
+        try:
             rate = int(float(self.xyz_hz_var.get()))
         except Exception:
-            self.lbl_xyz_error.configure(text="Invalid XYZ or rate")
+            self.lbl_xyz_error.configure(text="Invalid rate")
             return
 
         ptype = self.path_type_var.get()
