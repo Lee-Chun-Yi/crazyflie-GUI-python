@@ -1049,18 +1049,7 @@ class App(tk.Tk):
             except Exception as e:
                 self.enqueue_log(f"[restart] PowerSwitch error: {e}")
 
-            # 2) Auto-reconnect using current URI
-            self._status("Reconnecting…")
-            try:
-                self.on_connect()
-                self._status("Restart complete")
-            except Exception as e:
-                self._status("Restart done (not connected)")
-                self.enqueue_log(f"[restart] reconnect failed: {e}")
-                try:
-                    messagebox.showwarning("Reconnect failed", str(e))
-                except Exception:
-                    pass
+            self._status("Restart complete — please reconnect manually")
         finally:
             time.sleep(2.0)
             self._status("—")
