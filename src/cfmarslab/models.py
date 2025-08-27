@@ -3,6 +3,8 @@ from threading import Event, Lock
 from collections import deque
 from typing import Dict, Deque, Tuple
 
+from .config import PathCfg
+
 
 @dataclass
 class SharedState:
@@ -11,7 +13,7 @@ class SharedState:
         "roll": 0.0, "pitch": 0.0, "yaw": 0.0, "thrust": 0.0
     })
     # User target coords (m)
-    user_xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    xyz_target: Tuple[float, float, float] = PathCfg.DEFAULT_TARGET
     # Throttle offset applied to incoming RPYT throttle
     throttle_offset: int = 40000
     # Telemetry
@@ -35,7 +37,7 @@ class SharedState:
     # Last path selection applied from the UI
     path_type: str = "none"      # "none" | "circle" | "square"
     path_params: Dict[str, float] = field(default_factory=dict)
-    path_rate_hz: int = 20
+    rate_hz: int = PathCfg.DEFAULT_HZ
     path_elapsed: float = 0.0
     path_last_xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     path_angle: float = 0.0      # for circle

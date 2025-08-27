@@ -56,6 +56,7 @@ class PathCfg:
     DEFAULT_HZ: int = 20
     MIN_HZ: int = 1
     MAX_HZ: int = 200
+    DEFAULT_TARGET: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)

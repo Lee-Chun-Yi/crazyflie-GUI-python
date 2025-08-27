@@ -511,12 +511,25 @@ class FlightPathLoop(BaseLoop):
                  path_type: str, params: dict):
         super().__init__(rate_hz)
         self.state = state
+        self._cfg_lock = Lock()
         self.base_xyz = tuple(float(v) for v in base_xyz)
         self.path_type = path_type
         self.params = dict(params)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._addr = ("127.0.0.1", 51002)
         self._t0: float | None = None
+
+    def update_config(self, cfg: dict):
+        """Hot-swap path configuration atomically."""
+        with self._cfg_lock:
+            if "xyz" in cfg:
+                self.base_xyz = tuple(float(v) for v in cfg["xyz"])
+            if "path_type" in cfg:
+                self.path_type = str(cfg["path_type"])
+            if "path_params" in cfg:
+                self.params = dict(cfg["path_params"])
+            if "rate_hz" in cfg:
+                self.set_rate(int(cfg["rate_hz"]))
 
     def stop(self):  # override to close socket
         super().stop()
@@ -528,36 +541,36 @@ class FlightPathLoop(BaseLoop):
     def _should_run(self) -> bool:
         return self._run_flag.is_set() and not self.state.stop_all.is_set()
 
-    def _compute_circle(self, t: float) -> tuple[float, float, float, float]:
-        cx = float(self.params.get("center_x", self.base_xyz[0]))
-        cy = float(self.params.get("center_y", self.base_xyz[1]))
-        R = float(self.params.get("radius", 0.0))
-        v = float(self.params.get("speed", 0.0))
-        cw = bool(self.params.get("clockwise", True))
-        holdz = bool(self.params.get("hold_z", True))
-        amp = float(self.params.get("z_amp", 0.0))
-        per = float(self.params.get("z_period", 1.0))
+    def _compute_circle(self, t: float, base: tuple[float, float, float], params: dict) -> tuple[float, float, float, float]:
+        cx = float(params.get("center_x", base[0]))
+        cy = float(params.get("center_y", base[1]))
+        R = float(params.get("radius", 0.0))
+        v = float(params.get("speed", 0.0))
+        cw = bool(params.get("clockwise", True))
+        holdz = bool(params.get("hold_z", True))
+        amp = float(params.get("z_amp", 0.0))
+        per = float(params.get("z_period", 1.0))
         ang = (v / R if R > 0 else 0.0) * t
         if cw:
             ang = -ang
         x = cx + R * math.cos(ang)
         y = cy + R * math.sin(ang)
         if holdz or amp <= 0.0 or per <= 0.0:
-            z = self.base_xyz[2]
+            z = base[2]
         else:
-            z = self.base_xyz[2] + amp * math.sin(2 * math.pi * t / per)
+            z = base[2] + amp * math.sin(2 * math.pi * t / per)
         return x, y, z, ang
 
-    def _compute_square(self, t: float) -> tuple[float, float, float, float]:
-        cx = float(self.params.get("center_x", self.base_xyz[0]))
-        cy = float(self.params.get("center_y", self.base_xyz[1]))
-        L = float(self.params.get("side", self.params.get("side_length", 0.0)))
-        v = float(self.params.get("speed", 0.0))
-        cw = bool(self.params.get("clockwise", True))
-        dwell = float(self.params.get("dwell", 0.0))
-        holdz = bool(self.params.get("hold_z", True))
-        amp = float(self.params.get("z_amp", 0.0))
-        per = float(self.params.get("z_period", 1.0))
+    def _compute_square(self, t: float, base: tuple[float, float, float], params: dict) -> tuple[float, float, float, float]:
+        cx = float(params.get("center_x", base[0]))
+        cy = float(params.get("center_y", base[1]))
+        L = float(params.get("side", params.get("side_length", 0.0)))
+        v = float(params.get("speed", 0.0))
+        cw = bool(params.get("clockwise", True))
+        dwell = float(params.get("dwell", 0.0))
+        holdz = bool(params.get("hold_z", True))
+        amp = float(params.get("z_amp", 0.0))
+        per = float(params.get("z_period", 1.0))
         edge_time = L / v if v > 0 else 0.0
         cycle = 4 * (edge_time + dwell)
         t_mod = t % cycle if cycle > 0 else 0.0
@@ -596,24 +609,28 @@ class FlightPathLoop(BaseLoop):
                 idx = float(i + 1)
                 break
         if holdz or amp <= 0.0 or per <= 0.0:
-            z = self.base_xyz[2]
+            z = base[2]
         else:
-            z = self.base_xyz[2] + amp * math.sin(2 * math.pi * t / per)
+            z = base[2] + amp * math.sin(2 * math.pi * t / per)
         return x, y, z, idx
 
     def _step(self):
         if self._t0 is None:
             self._t0 = self._rt.now()
         t = self._rt.now() - self._t0
+        with self._cfg_lock:
+            base_xyz = self.base_xyz
+            ptype = self.path_type
+            params = dict(self.params)
         try:
-            if self.path_type == "circle":
-                x, y, z, ang = self._compute_circle(t)
+            if ptype == "circle":
+                x, y, z, ang = self._compute_circle(t, base_xyz, params)
                 idx = ang
-            elif self.path_type == "square":
-                x, y, z, idx = self._compute_square(t)
+            elif ptype == "square":
+                x, y, z, idx = self._compute_square(t, base_xyz, params)
                 ang = 0.0
             else:
-                x, y, z = self.base_xyz
+                x, y, z = base_xyz
                 ang = 0.0
                 idx = 0.0
             pkt = struct.pack("<3f", float(x), float(y), float(z))
@@ -787,22 +804,30 @@ def land(mode: str, state: SharedState, link: LinkManager):
 
 # ---- Flight path public API ----
 
-def start_path(state: SharedState, rate_hz: int, base_xyz: tuple[float, float, float],
-               path_type: str, params: dict):
-    """Start streaming XYZ targets to MATLAB based on path parameters."""
+def start_path(state: SharedState):
+    """Start streaming XYZ targets to MATLAB based on current model state."""
     global _path_loop
     if _path_loop and _path_loop.is_running():
         _path_loop.stop()
+    with state.lock:
+        base_xyz = tuple(state.xyz_target)
+        path_type = state.path_type
+        params = dict(state.path_params)
+        rate_hz = int(state.rate_hz)
     loop = FlightPathLoop(state, rate_hz, base_xyz, path_type, params)
     loop.start()
     _path_loop = loop
     with state.lock:
         state.stream_running = True
-        state.path_type = path_type
-        state.path_params = dict(params)
-        state.path_rate_hz = int(rate_hz)
         state.path_error = ""
     return loop
+
+
+def hot_update(config: dict) -> None:
+    """Update running path loop configuration without restart."""
+    loop = _path_loop
+    if loop and loop.is_running():
+        loop.update_config(config)
 
 
 def stop_path(state: SharedState):
