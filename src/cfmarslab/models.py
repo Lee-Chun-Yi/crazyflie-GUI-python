@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from threading import Event, Lock
 from collections import deque
-from typing import Dict, Deque, Tuple
+from typing import Dict, Deque, Tuple, Optional
 
 from .config import PathCfg
 
@@ -44,3 +44,20 @@ class SharedState:
     path_index: float = 0.0      # for square
     path_actual_rate: float = 0.0
     path_error: str = ""
+
+
+# --- last streamed XYZ for UI marker -------------------------------------
+_last_stream_xyz: Optional[Tuple[float, float, float]] = None
+_lock = Lock()
+
+
+def set_last_stream_xyz(v: Optional[Tuple[float, float, float]]) -> None:
+    """Atomically store the most recent XYZ sent to MATLAB."""
+    with _lock:
+        globals()["_last_stream_xyz"] = v
+
+
+def get_last_stream_xyz() -> Optional[Tuple[float, float, float]]:
+    """Return the last streamed XYZ, or None if unavailable."""
+    with _lock:
+        return _last_stream_xyz
