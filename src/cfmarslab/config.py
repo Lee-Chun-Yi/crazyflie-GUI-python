@@ -49,6 +49,14 @@ class Vicon:
     PREFERRED: str = ">6d"     # big-endian 6 doubles
     # Valid alternatives: ">6f"
 
+
+@dataclass(frozen=True)
+class PathCfg:
+    """Default parameters and limits for Flight Path streaming."""
+    DEFAULT_HZ: int = 20
+    MIN_HZ: int = 1
+    MAX_HZ: int = 200
+
 @dataclass
 class AppConfig:
     recent_uris: list[str]
