@@ -9,7 +9,7 @@ from collections import deque
 from .models import SharedState
 from .utils import set_realtime_priority
 from .realtime import Realtime
-from .config import RT
+from .config import RT, Safety
 
 
 class UDPInput:
@@ -340,10 +340,17 @@ class BaseLoop:
 class SetpointLoop(BaseLoop):
     """Send RPYT to Crazyflie at a fixed (adjustable) frequency."""
 
-    def __init__(self, state: SharedState, link, rate_hz: int = 100):
+    def __init__(
+        self,
+        state: SharedState,
+        link,
+        rate_hz: int = 100,
+        min_thrust: int = Safety.TAKEOFF_THRUST,
+    ):
         super().__init__(rate_hz)
         self.state = state
         self.link = link
+        self.min_thrust = int(min_thrust)
 
     def _should_run(self) -> bool:
         return self._run_flag.is_set() and not self.state.stop_all.is_set()
@@ -358,7 +365,7 @@ class SetpointLoop(BaseLoop):
             if vbat and vbat < 3.7:
                 r = p = y = 0.0
                 th = 0
-            if th <= 48000:
+            if th <= self.min_thrust:
                 r = p = y = 0.0
         self._sender.enqueue(self.link.send_setpoint, r, p, y, th)
 

@@ -16,6 +16,7 @@ class Rates:
 class Safety:
     VBAT_BLOCK: float = 3.7    # 低於此電壓禁止起飛
     VBAT_AUTO_LAND: float = 3.5
+    TAKEOFF_THRUST: int = 38000  # 起飛油門門檻
 
 @dataclass(frozen=True)
 class Controls:
