@@ -34,6 +34,21 @@ def decode_pose_be_doubles(payload: bytes):
     x, y, z, rx, ry, rz, _ = decode_vicon_be(payload)
     return x, y, z, rx, ry, rz
 
+def power_cycle_crazyflie(uri: str) -> None:
+    """Power cycle a Crazyflie via the PowerSwitch.
+
+    Prints status messages and toggles the STM32 power.
+    """
+    from cflib.utils.power_switch import PowerSwitch
+
+    print("Power cycling Crazyflie…")
+    ps = PowerSwitch(uri)
+    ps.stm_power_down()
+    time.sleep(1)
+    ps.stm_power_up()
+    time.sleep(1)
+    print("Power cycle complete")
+
 RADIO_BITRATES = ("2M", "1M", "250K")
 UI_TICK_MS = int(1000 / Rates.LOG_UI_HZ)
 
@@ -1256,51 +1271,13 @@ class App(tk.Tk):
             self._sp_stop()
 
     def _on_restart(self):
-        threading.Thread(target=self._restart_worker, daemon=True).start()
-
-    def _status(self, msg: str):
-        try:
-            self.lbl_restart.configure(text=msg)
-            self.lbl_restart.update_idletasks()
-        except Exception:
-            pass
+        uri = str(self._current_uri())
+        threading.Thread(target=power_cycle_crazyflie, args=(uri,), daemon=True).start()
 
     def _current_uri(self) -> str:
         if getattr(self, "uri_var", None) and self.uri_var.get():
             return self.uri_var.get()
         return self._rebuild_uri()
-
-    def _restart_worker(self):
-        from cflib.utils.power_switch import PowerSwitch
-
-        try:
-            self.btn_restart.configure(state="disabled")
-        except Exception:
-            pass
-
-        try:
-            uri = str(self._current_uri())
-
-            # 1) Power-cycle via PowerSwitch
-            self._status("Powering down…")
-            try:
-                ps = PowerSwitch(uri)
-                ps.stm_power_down()
-                time.sleep(2.0)
-                self._status("Powering up…")
-                ps.stm_power_up()
-                time.sleep(2.0)
-            except Exception as e:
-                self.enqueue_log(f"[restart] PowerSwitch error: {e}")
-
-            self._status("Restart complete — please reconnect manually")
-        finally:
-            time.sleep(2.0)
-            self._status("—")
-            try:
-                self.btn_restart.configure(state="normal")
-            except Exception:
-                pass
 
     # ---- logging of selected params ----
     def _append_log_params_sample(self):
