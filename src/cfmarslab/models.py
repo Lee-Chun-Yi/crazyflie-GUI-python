@@ -45,6 +45,9 @@ class SharedState:
     path_actual_rate: float = 0.0
     path_error: str = ""
 
+    # Whether any internal receiver is bound to localhost UDP port 8888
+    using_udp_8888: bool = False
+
 
 # --- last streamed XYZ for UI marker -------------------------------------
 _last_stream_xyz: Optional[Tuple[float, float, float]] = None

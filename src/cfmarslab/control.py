@@ -24,6 +24,8 @@ _setpoint_loop: Optional['SetpointLoop'] = None
 _pwm_loop: Optional['PWMSetpointLoop'] = None
 _pwm_udp: Optional['PWMUDPReceiver'] = None
 _path_loop: Optional['FlightPathLoop'] = None
+# Track UDPInput instances using port 8888
+_udp_inputs: List['UDPInput'] = []
 
 
 def preview_points_none(x: float, y: float, z: float):
@@ -128,12 +130,27 @@ class UDPInput:
         self._thread = Thread(target=self._run, daemon=True)
         self._thread.start()
         set_realtime_priority(self._thread.ident)  # reduce jitter; may require admin rights
+        # register active listener
+        if self not in _udp_inputs:
+            _udp_inputs.append(self)
+        try:
+            with self.state.lock:
+                self.state.using_udp_8888 = True
+        except Exception:
+            pass
 
     def stop(self):
         self._running.clear()
         if self._thread:
             self._thread.join(timeout=1.0)
             self._thread = None
+        if self in _udp_inputs:
+            _udp_inputs.remove(self)
+        try:
+            with self.state.lock:
+                self.state.using_udp_8888 = False
+        except Exception:
+            pass
 
     def set_rate(self, hz: int):
         with self._rate_lock:
@@ -774,6 +791,11 @@ def start_mode(mode: str, state: SharedState, link: LinkManager, *, rate_hz: int
                 _pwm_udp = PWMUDPReceiver(port=udp_port)
             _pwm_udp.start()
             _pwm_loop.attach_udp(_pwm_udp)
+            try:
+                with state.lock:
+                    state.using_udp_8888 = True
+            except Exception:
+                pass
         _pwm_loop.start()
         loop = _pwm_loop
     with state.lock:
@@ -893,15 +915,59 @@ def send_xyz_once(x: float, y: float, z: float):
             pass
 
 
-def clear_udp_8888():
-    """Release localhost UDP port 8888 if held by this process."""
+def clear_udp_8888(force: bool = True) -> None:
+    """Best-effort: stop any receivers/sockets bound to UDP 8888 and free it."""
+    global _pwm_udp
+    state_ref = None
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("127.0.0.1", 8888))
-        sock.close()
-        logging.debug("[UDP] Cleared port 8888 after Stop")
-    except OSError:
-        pass
+        # Stop any registered UDPInput listeners
+        for udp in list(_udp_inputs):
+            try:
+                state_ref = getattr(udp, "state", state_ref)
+                th = getattr(udp, "_thread", None)
+                udp.stop()
+                if th:
+                    th.join(timeout=0.5)
+            except Exception:
+                pass
+            finally:
+                if udp in _udp_inputs:
+                    _udp_inputs.remove(udp)
+
+        # Stop PWM UDP receiver if running
+        if _pwm_udp:
+            try:
+                th = getattr(_pwm_udp, "_thread", None)
+                _pwm_udp.stop()
+                if th:
+                    th.join(timeout=0.5)
+            except Exception:
+                pass
+            _pwm_udp = None
+
+        # Clear state flag if available
+        if state_ref:
+            try:
+                with state_ref.lock:
+                    state_ref.using_udp_8888 = False
+            except Exception:
+                pass
+
+        # Fallback bind+close to ensure port is released
+        import socket, contextlib
+        with contextlib.suppress(Exception):
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind(("127.0.0.1", 8888))
+            s.close()
+
+        # On Windows attempt to kill lingering holders
+        try:
+            from .utils import clear_udp_ports_windows
+            clear_udp_ports_windows([8888])
+        except Exception:
+            pass
+    except Exception:
+        logger.exception("clear_udp_8888 failed")
 
 
 def send_udp_rpyt_zero():

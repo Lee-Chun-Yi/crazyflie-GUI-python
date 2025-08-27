@@ -261,6 +261,18 @@ class App(tk.Tk):
         self.console.configure(state='normal'); self.console.insert('end', s + '\n')
         self.console.configure(state='disabled'); self.console.see('end')
 
+    def _console_log(self, s: str):
+        self.log(s)
+
+    def _flash_status(self, s: str, ms: int = 2000):
+        lbl = getattr(self, "lbl_udp_status", None)
+        if lbl:
+            try:
+                lbl.configure(text=s)
+                self.after(ms, lambda: lbl.configure(text=""))
+            except Exception:
+                pass
+
     def _log(self, s: str):
         """Thread-safe logger used by background threads."""
         try:
@@ -518,6 +530,11 @@ class App(tk.Tk):
         safe = ttk.Labelframe(parent, text="Safety", padding=8); safe.pack(fill=tk.X, pady=(8,0))
         ttk.Button(safe, text="Emergency stop", command=self.emergency_stop).pack(side=tk.LEFT)
         ttk.Button(safe, text="Land", command=self.land).pack(side=tk.LEFT, padx=8)
+        btn_clear = ttk.Button(safe, text="Clear UDP 8888", command=self._on_clear_udp8888)
+        btn_clear.pack(side=tk.LEFT)
+        btn_clear.tooltip = "Release port 8888 (use when address-in-use)"
+        self.lbl_udp_status = ttk.Label(safe, text="")
+        self.lbl_udp_status.pack(side=tk.LEFT, padx=8)
 
     # ---- Flight Path tab ----
     def _apply_axes_bounds(self):
@@ -1289,6 +1306,19 @@ class App(tk.Tk):
             self._pwm_stop()
         else:
             self._sp_stop()
+
+    def _on_clear_udp8888(self):
+        running = bool(getattr(self.state_model, "stream_running", False) or
+                       getattr(self.state_model, "using_udp_8888", False))
+        if running:
+            if not messagebox.askyesno(
+                "Clear UDP 8888",
+                "Streaming/receiver may still be using port 8888.\nStop them and clear anyway?",
+            ):
+                return
+        controller.clear_udp_8888()
+        self._console_log("[UDP] Port 8888 cleared.")
+        self._flash_status("Cleared")
 
     def _on_restart(self):
         uri = str(self._current_uri())
