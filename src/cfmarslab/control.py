@@ -9,7 +9,7 @@ from collections import deque
 from .models import SharedState
 from .utils import set_realtime_priority
 from .realtime import Realtime
-from .config import RT, Safety, Landing, Rates
+from .config import RT, Safety, Landing, Rates, PreviewCfg
 from .link import LinkManager
 
 # Global loop references to ensure only one active at a time
@@ -17,6 +17,85 @@ _setpoint_loop: Optional['SetpointLoop'] = None
 _pwm_loop: Optional['PWMSetpointLoop'] = None
 _pwm_udp: Optional['PWMUDPReceiver'] = None
 _path_loop: Optional['FlightPathLoop'] = None
+
+
+def preview_points_none(x: float, y: float, z: float):
+    return [(float(x), float(y), float(z))]
+
+
+def preview_points_circle(
+    cx: float,
+    cy: float,
+    z0: float,
+    radius: float,
+    clockwise: bool,
+    hold_z: bool,
+    z_amp: float = 0.0,
+    z_period: float = 1.0,
+    n: int = PreviewCfg.CIRCLE_SAMPLES,
+):
+    pts = []
+    n = max(1, int(n))
+    for i in range(n + 1):
+        frac = i / n
+        ang = 2 * math.pi * frac
+        if clockwise:
+            ang = -ang
+        x = cx + radius * math.cos(ang)
+        y = cy + radius * math.sin(ang)
+        if hold_z or z_amp <= 0.0 or z_period <= 0.0:
+            z = z0
+        else:
+            z = z0 + z_amp * math.sin(2 * math.pi * frac)
+        pts.append((x, y, z))
+    return pts
+
+
+def preview_points_square(
+    cx: float,
+    cy: float,
+    z0: float,
+    side: float,
+    clockwise: bool,
+    hold_z: bool,
+    z_amp: float = 0.0,
+    z_period: float = 1.0,
+    n_edge: int = PreviewCfg.SQUARE_EDGE_SAMPLES,
+):
+    n_edge = max(1, int(n_edge))
+    half = side / 2.0
+    if clockwise:
+        verts = [
+            (cx + half, cy + half),
+            (cx + half, cy - half),
+            (cx - half, cy - half),
+            (cx - half, cy + half),
+        ]
+    else:
+        verts = [
+            (cx + half, cy + half),
+            (cx - half, cy + half),
+            (cx - half, cy - half),
+            (cx + half, cy - half),
+        ]
+    pts = []
+    total = 4 * n_edge
+    for i in range(4):
+        sx, sy = verts[i]
+        ex, ey = verts[(i + 1) % 4]
+        for j in range(n_edge):
+            frac = (i * n_edge + j) / total
+            ratio = j / n_edge
+            x = sx + (ex - sx) * ratio
+            y = sy + (ey - sy) * ratio
+            if hold_z or z_amp <= 0.0 or z_period <= 0.0:
+                z = z0
+            else:
+                z = z0 + z_amp * math.sin(2 * math.pi * frac)
+            pts.append((x, y, z))
+    # close loop
+    pts.append(pts[0])
+    return pts
 
 
 class UDPInput:

@@ -6,7 +6,7 @@ from collections import deque
 import math
 
 from .models import SharedState
-from .config import load_config, save_config, Rates, PathCfg
+from .config import load_config, save_config, Rates, PathCfg, PreviewCfg
 from .control import UDPInput
 from . import control as controller
 from typing import TYPE_CHECKING
@@ -168,6 +168,10 @@ class App(tk.Tk):
         self._quiver_artist = None
         self._trail_artist  = None
         self._point_artist  = None
+        # Preview artists for XYZ path apply
+        self._preview_target = None
+        self._preview_path = None
+        self._preview_extra = None  # center or vertices
         self._last_draw_ts = 0.0
         self._last_kpi_update = 0.0
         self.vx_var = tk.StringVar(value="--")
@@ -290,6 +294,7 @@ class App(tk.Tk):
                         command=self._on_path_type).pack(side=tk.LEFT, padx=(6,0))
         ttk.Radiobutton(path_row, text="Square", variable=self.path_type_var, value="square",
                         command=self._on_path_type).pack(side=tk.LEFT, padx=(6,0))
+        ttk.Button(path_row, text="Apply", command=self._on_apply_path).pack(side=tk.LEFT, padx=(12,0))
 
         # Parameter container
         self.path_params_frame = ttk.Frame(xyz)
@@ -356,9 +361,11 @@ class App(tk.Tk):
         self.s_zper_entry = ttk.Entry(self.square_frame, width=10, textvariable=self.s_zper_var)
         self.s_zper_entry.grid(row=4, column=3)
 
-        # Status line
+        # Status and error line
         status_row = ttk.Frame(xyz); status_row.pack(fill=tk.X, pady=(4,0))
-        self.lbl_xyz_status = ttk.Label(status_row, text="Idle")
+        self.lbl_xyz_error = ttk.Label(status_row, text="", foreground="red")
+        self.lbl_xyz_error.pack(side=tk.LEFT)
+        self.lbl_xyz_status = ttk.Label(status_row, text="Ready: None")
         self.lbl_xyz_status.pack(side=tk.RIGHT)
 
         self._on_circle_holdz(); self._on_square_holdz(); self._on_path_type()
@@ -752,6 +759,159 @@ class App(tk.Tk):
         self.s_zamp_entry.configure(state=state)
         self.s_zper_entry.configure(state=state)
 
+    def _clear_preview(self):
+        for attr in ("_preview_target", "_preview_path", "_preview_extra"):
+            art = getattr(self, attr, None)
+            if art is not None:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+    def _on_apply_path(self):
+        try:
+            x = float(self.x_var.get())
+            y = float(self.y_var.get())
+            z = float(self.z_var.get())
+        except Exception:
+            self.lbl_xyz_error.configure(text="Invalid XYZ")
+            return
+        ptype = self.path_type_var.get()
+        params: dict[str, float] = {}
+        try:
+            if ptype == "circle":
+                params = {
+                    "center_x": float(self.c_cx_var.get() or x),
+                    "center_y": float(self.c_cy_var.get() or y),
+                    "radius": float(self.c_radius_var.get()),
+                    "speed": float(self.c_speed_var.get()),
+                    "clockwise": bool(self.c_cw_var.get()),
+                    "hold_z": bool(self.c_holdz_var.get()),
+                }
+                if params["radius"] <= 0 or params["speed"] <= 0:
+                    raise ValueError
+                if not params["hold_z"]:
+                    params["z_amp"] = float(self.c_zamp_var.get() or 0.0)
+                    params["z_period"] = float(self.c_zper_var.get() or 1.0)
+                    if params["z_amp"] < 0 or params["z_period"] <= 0:
+                        raise ValueError
+            elif ptype == "square":
+                params = {
+                    "center_x": float(self.s_cx_var.get() or x),
+                    "center_y": float(self.s_cy_var.get() or y),
+                    "side": float(self.s_side_var.get()),
+                    "speed": float(self.s_speed_var.get()),
+                    "clockwise": bool(self.s_cw_var.get()),
+                    "dwell": float(self.s_dwell_var.get() or 0.0),
+                    "hold_z": bool(self.s_holdz_var.get()),
+                }
+                if params["side"] <= 0 or params["speed"] <= 0 or params["dwell"] < 0:
+                    raise ValueError
+                if not params["hold_z"]:
+                    params["z_amp"] = float(self.s_zamp_var.get() or 0.0)
+                    params["z_period"] = float(self.s_zper_var.get() or 1.0)
+                    if params["z_amp"] < 0 or params["z_period"] <= 0:
+                        raise ValueError
+            else:
+                ptype = "none"
+        except Exception:
+            self.lbl_xyz_error.configure(text="Invalid input")
+            return
+
+        with self.state_model.lock:
+            self.state_model.path_type = ptype
+            self.state_model.path_params = params
+            self.state_model.user_xyz = (x, y, z)
+
+        self.lbl_xyz_error.configure(text="")
+        self._ensure_3d_canvas()
+        if not self.ax3d:
+            return
+        self._clear_preview()
+        if ptype == "circle":
+            pts = controller.preview_points_circle(
+                params["center_x"],
+                params["center_y"],
+                z,
+                params["radius"],
+                params["clockwise"],
+                params["hold_z"],
+                params.get("z_amp", 0.0),
+                params.get("z_period", 1.0),
+            )
+            xs, ys, zs = zip(*pts)
+            self._preview_path, = self.ax3d.plot(xs, ys, zs, color=PreviewCfg.PATH_COLOR)
+            self._preview_target = self.ax3d.scatter([x], [y], [z], color=PreviewCfg.TARGET_COLOR,
+                                                     s=PreviewCfg.TARGET_SIZE)
+            cx, cy = params["center_x"], params["center_y"]
+            self._preview_extra = self.ax3d.scatter([cx], [cy], [z], color=PreviewCfg.CENTER_COLOR, marker="x")
+            extra_pts = [(cx, cy, z)]
+        elif ptype == "square":
+            pts = controller.preview_points_square(
+                params["center_x"],
+                params["center_y"],
+                z,
+                params["side"],
+                params["clockwise"],
+                params["hold_z"],
+                params.get("z_amp", 0.0),
+                params.get("z_period", 1.0),
+            )
+            xs, ys, zs = zip(*pts)
+            self._preview_path, = self.ax3d.plot(xs, ys, zs, color=PreviewCfg.PATH_COLOR)
+            self._preview_target = self.ax3d.scatter([x], [y], [z], color=PreviewCfg.TARGET_COLOR,
+                                                     s=PreviewCfg.TARGET_SIZE)
+            half = params["side"] / 2.0
+            verts = [
+                (params["center_x"] + half, params["center_y"] + half, z),
+                (params["center_x"] + half, params["center_y"] - half, z),
+                (params["center_x"] - half, params["center_y"] - half, z),
+                (params["center_x"] - half, params["center_y"] + half, z),
+            ]
+            self._preview_extra = self.ax3d.scatter(
+                [v[0] for v in verts], [v[1] for v in verts], [v[2] for v in verts],
+                color=PreviewCfg.CENTER_COLOR,
+            )
+            extra_pts = verts
+        else:
+            pts = controller.preview_points_none(x, y, z)
+            xs, ys, zs = zip(*pts)
+            self._preview_target = self.ax3d.scatter(xs, ys, zs, color=PreviewCfg.TARGET_COLOR,
+                                                     s=PreviewCfg.TARGET_SIZE)
+            extra_pts = []
+
+        all_pts = list(pts) + [(x, y, z)] + list(extra_pts)
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        zs = [p[2] for p in all_pts]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        zmin, zmax = min(zs), max(zs)
+        rng = max(xmax - xmin, ymax - ymin, zmax - zmin)
+        if rng <= 0:
+            rng = 1.0
+        half = rng / 2.0 * (1 + PreviewCfg.AXIS_MARGIN_FRAC)
+        mx = (xmax + xmin) / 2.0
+        my = (ymax + ymin) / 2.0
+        mz = (zmax + zmin) / 2.0
+        self.ax3d.set_xlim(mx - half, mx + half)
+        self.ax3d.set_ylim(my - half, my + half)
+        self.ax3d.set_zlim(mz - half, mz + half)
+        if self.canvas3d:
+            self.canvas3d.draw_idle()
+
+        if ptype == "circle":
+            self.lbl_xyz_status.configure(
+                text=f"Ready: Circle (R={params['radius']}, cx={params['center_x']}, cy={params['center_y']})"
+            )
+        elif ptype == "square":
+            self.lbl_xyz_status.configure(
+                text=f"Ready: Square (L={params['side']}, cx={params['center_x']}, cy={params['center_y']})"
+            )
+        else:
+            self.lbl_xyz_status.configure(text="Ready: None")
+
     # ---- Log Parameter tab (alias used in __init__) ----
     def _build_log_param_tab(self, parent):
         """Compatibility alias so __init__ can call either name."""
@@ -906,41 +1066,9 @@ class App(tk.Tk):
         except Exception:
             messagebox.showerror("Invalid input", "XYZ or rate invalid")
             return
-        ptype = self.path_type_var.get()
-        params = {}
-        try:
-            if ptype == "circle":
-                params = {
-                    "center_x": float(self.c_cx_var.get() or base[0]),
-                    "center_y": float(self.c_cy_var.get() or base[1]),
-                    "radius": float(self.c_radius_var.get()),
-                    "speed": float(self.c_speed_var.get()),
-                    "clockwise": bool(self.c_cw_var.get()),
-                    "hold_z": bool(self.c_holdz_var.get()),
-                }
-                if params["radius"] <= 0 or params["speed"] <= 0:
-                    raise ValueError
-                if not params["hold_z"]:
-                    params["z_amp"] = float(self.c_zamp_var.get() or 0.0)
-                    params["z_period"] = float(self.c_zper_var.get() or 1.0)
-            elif ptype == "square":
-                params = {
-                    "center_x": float(self.s_cx_var.get() or base[0]),
-                    "center_y": float(self.s_cy_var.get() or base[1]),
-                    "side": float(self.s_side_var.get()),
-                    "speed": float(self.s_speed_var.get()),
-                    "clockwise": bool(self.s_cw_var.get()),
-                    "dwell": float(self.s_dwell_var.get() or 0.0),
-                    "hold_z": bool(self.s_holdz_var.get()),
-                }
-                if params["side"] <= 0 or params["speed"] <= 0 or params["dwell"] < 0:
-                    raise ValueError
-                if not params["hold_z"]:
-                    params["z_amp"] = float(self.s_zamp_var.get() or 0.0)
-                    params["z_period"] = float(self.s_zper_var.get() or 1.0)
-        except Exception:
-            messagebox.showerror("Invalid input", "Path parameters invalid")
-            return
+        with self.state_model.lock:
+            ptype = self.state_model.path_type
+            params = dict(self.state_model.path_params)
         loop = controller.start_path(self.state_model, rate, base, ptype, params)
         if loop:
             self.path_loop = loop
@@ -1287,8 +1415,6 @@ class App(tk.Tk):
                         text=f"Streaming {ptype.title()} | t={t:.1f} s | rate={ar:.1f} Hz | XYZ=({x:.2f}, {y:.2f}, {z:.2f})",
                     )
                     self._last_path_status = now
-            else:
-                self.lbl_xyz_status.configure(text="Idle")
         except Exception:
             pass
 
