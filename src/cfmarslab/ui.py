@@ -281,6 +281,31 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _set_fc_buttons(self, takeoff_enabled: bool, land_enabled: bool) -> None:
+        """Enable/disable Take off and Land buttons for both modes."""
+        state_to = tk.NORMAL if takeoff_enabled else tk.DISABLED
+        state_land = tk.NORMAL if land_enabled else tk.DISABLED
+        for btn in (getattr(self, "btn_sp_start", None), getattr(self, "btn_pwm_start", None)):
+            if btn:
+                try:
+                    btn.config(state=state_to)
+                except Exception:
+                    pass
+        for btn in (getattr(self, "btn_sp_stop", None), getattr(self, "btn_pwm_stop", None)):
+            if btn:
+                try:
+                    btn.config(state=state_land)
+                except Exception:
+                    pass
+
+    def _update_rpyt_label(self, r: float, p: float, y: float, t: float) -> None:
+        try:
+            self.lbl_rpyt.config(
+                text=f"R: {r:+.2f}°  P: {p:+.2f}°  Y: {y:+.2f}/s  T: {int(t)}"
+            )
+        except Exception:
+            pass
+
     def _is_4pid_mode_active(self) -> bool:
         """Return True iff the 4-PID Controls tab is selected."""
         try:
@@ -529,10 +554,9 @@ class App(tk.Tk):
 
         # Safety（共用）
         safe = ttk.Labelframe(parent, text="Safety", padding=8); safe.pack(fill=tk.X, pady=(8,0))
-        ttk.Button(safe, text="Emergency stop", command=self.emergency_stop).pack(side=tk.LEFT)
-        ttk.Button(safe, text="Land", command=self.land).pack(side=tk.LEFT, padx=8)
+        ttk.Button(safe, text="Emergency stop", command=self._on_emergency_stop).pack(side=tk.LEFT)
         btn_clear = ttk.Button(safe, text="Clear UDP 8888", command=self._on_clear_udp8888)
-        btn_clear.pack(side=tk.LEFT)
+        btn_clear.pack(side=tk.LEFT, padx=8)
         btn_clear.tooltip = "Release port 8888 (use when address-in-use)"
         self.lbl_udp_status = ttk.Label(safe, text="")
         self.lbl_udp_status.pack(side=tk.LEFT, padx=8)
@@ -1277,47 +1301,18 @@ class App(tk.Tk):
                 self._sp_stop()
 
     # ---- Safety ----
-    def emergency_stop(self):
-        if self._is_4pid_mode_active():
-            try:
-                if self.pwm_loop and self.pwm_loop.is_running():
-                    self._pwm_stop()
-                if not self.cf:
-                    self.log("Emergency stop: Not connected")
-                    return
-                for i in range(4):
-                    try:
-                        self.cf.param.set_value(f"motorPowerSet.m{i+1}", "0")
-                    except Exception as e:
-                        self.log(f"Emergency stop m{i+1} error: {e}")
-                if getattr(self, "pwm_vars", None):
-                    for var in self.pwm_vars:
-                        try:
-                            var.set("0")
-                        except Exception:
-                            pass
-                self.log("Emergency stop (4-PID): motors set to 0")
-            except Exception as e:
-                self.log(f"Emergency stop failed: {e}")
-        else:
-            try:
-                if self.link: self.link.send_setpoint(0.0, 0.0, 0.0, 0)
-                self.log("Emergency stop (RPYT=0,0,0,0) sent")
-            except Exception as e:
-                self.log(f"Emergency stop failed: {e}")
-
-    def land(self):
-        if self._is_4pid_mode_active():
-            self._pwm_stop()
-        else:
-            self._sp_stop()
+    def _on_emergency_stop(self):
+        controller.emergency_stop(self.link, self.state_model)
+        self.setpoints = None
+        self.pwm_loop = None
+        self._set_fc_buttons(takeoff_enabled=True, land_enabled=False)
+        self._update_rpyt_label(0.0, 0.0, 0.0, 0.0)
+        self._console_log("[SAFETY] Emergency stop: control loops terminated, RPYT=0 sent.")
 
     def _on_clear_udp8888(self):
         controller.clear_udp_8888_with_neutral(self.link)
         r, p, y, t = models.get_last_rpyt()
-        self.lbl_rpyt.config(
-            text=f"R: {r:+.2f}°  P: {p:+.2f}°  Y: {y:+.2f}/s  T: {int(t)}"
-        )
+        self._update_rpyt_label(r, p, y, t)
         self._console_log("[UDP] Neutral sent and port 8888 cleared; RPYT reset to zero.")
 
     def _on_restart(self):

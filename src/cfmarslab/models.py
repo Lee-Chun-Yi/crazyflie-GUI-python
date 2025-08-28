@@ -82,6 +82,15 @@ def get_last_rpyt():
         return _last_rpyt
 
 
+def clear_stop_flags(state: SharedState) -> None:
+    """Reset stop events so control loops may be restarted."""
+    try:
+        state.stop_all.clear()
+        state.stop_flight.clear()
+    except Exception:
+        pass
+
+
 def set_last_stream_xyz(v: Optional[Tuple[float, float, float]]) -> None:
     """Atomically store the most recent XYZ sent to MATLAB."""
     with _stream_lock:
