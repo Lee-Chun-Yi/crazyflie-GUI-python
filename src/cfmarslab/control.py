@@ -908,6 +908,22 @@ def stop_path(state: SharedState):
     set_last_stream_xyz(None)
 
 
+def stop_all_control_loops_if_any() -> None:
+    """Stop any running control/path loops and UDP receivers."""
+    global _setpoint_loop, _pwm_loop, _path_loop
+    for name in ("_setpoint_loop", "_pwm_loop", "_path_loop"):
+        loop = globals().get(name)
+        try:
+            if loop and getattr(loop, "is_running", lambda: False)():
+                loop.stop()
+        except Exception:
+            pass
+        finally:
+            globals()[name] = None
+    stop_udp8888_receivers_if_any()
+    set_last_stream_xyz(None)
+
+
 def send_xyz_once(x: float, y: float, z: float):
     """Send a single XYZ packet to MATLAB (non-blocking best effort)."""
     try:
@@ -1009,6 +1025,32 @@ def clear_udp_8888_with_neutral(link_mgr: LinkManager | None) -> None:
         clear_udp_ports_windows([8888])
     except Exception:
         pass
+
+
+def emergency_stop(link_mgr: LinkManager | None, state: SharedState) -> None:
+    """Immediate hard stop: kill loops and send neutral RPYT once."""
+    try:
+        # 1) cut all loops
+        state.stop_all.set()
+        state.stop_flight.set()
+        state.stream_running = False
+        stop_all_control_loops_if_any()
+
+        # 2) neutral RPYT
+        cmdr = link_mgr.get_commander() if link_mgr else None
+        if cmdr:
+            cmdr.send_setpoint(0.0, 0.0, 0.0, 0)
+
+        # 3) reset model/state
+        state.active_mode = None
+        state.is_flying.clear()
+        models.set_accept_udp_8888(False)
+        models.set_last_rpyt((0.0, 0.0, 0.0, 0.0))
+        models.clear_stop_flags(state)
+
+        print("[SAFETY] Emergency stop: control loops terminated, RPYT=0 sent.")
+    except Exception as e:
+        print(f"[SAFETY] Emergency stop failed: {e}")
 
 
 def send_udp_rpyt_zero():
