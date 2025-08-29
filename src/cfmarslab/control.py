@@ -38,7 +38,6 @@ ENABLE_PARAM_CANDIDATES = ["crtp_pwm.enable", "pwm.enable", "motorPowerSet.enabl
 # Runtime state for the new 4-PWM loop
 _pwm_thread: Optional[Thread] = None
 _pwm_stop_evt = Event()
-_pwm_manual_vals = [0, 0, 0, 0]
 _pwm_enable_param_name = ""
 
 
@@ -839,7 +838,7 @@ def start_4pwm_loop(state: SharedState, link_mgr: LinkManager, rate_hz: float,
                     pwm_mode: str = "manual", manual_pwm: List[int] | None = None,
                     udp_port: int = 8888) -> bool:
     """Start background loop sending 4×PWM via CRTP port 0x0A."""
-    global _pwm_thread, _pwm_stop_evt, _pwm_udp, _pwm_manual_vals, _pwm_enable_param_name
+    global _pwm_thread, _pwm_stop_evt, _pwm_udp, _pwm_enable_param_name
     if _pwm_thread and _pwm_thread.is_alive():
         return True
     if not link_mgr or not link_mgr.ensure_connected():
@@ -874,7 +873,8 @@ def start_4pwm_loop(state: SharedState, link_mgr: LinkManager, rate_hz: float,
         except Exception:
             pass
     else:
-        _pwm_manual_vals = [clamp_u16(v) for v in (manual_pwm or [0, 0, 0, 0])[:4]]
+        vals = [clamp_u16(v) for v in (manual_pwm or [0, 0, 0, 0])[:4]]
+        models.set_desired_pwm_tuple(*vals)
 
     def _worker():
         last_t = time.perf_counter()
@@ -886,7 +886,7 @@ def start_4pwm_loop(state: SharedState, link_mgr: LinkManager, rate_hz: float,
             if pwm_mode == "udp" and _pwm_udp:
                 vals = _pwm_udp.get_last()
             else:
-                vals = list(_pwm_manual_vals)
+                vals = models.get_desired_pwm_tuple()
             m1, m2, m3, m4 = [clamp_u16(v) for v in vals[:4]]
             try:
                 send_4pwm_packet(cf, m1, m2, m3, m4)

@@ -53,6 +53,18 @@ def power_cycle_crazyflie(uri: str) -> None:
 RADIO_BITRATES = ("2M", "1M", "250K")
 UI_TICK_MS = int(1000 / Rates.LOG_UI_HZ)
 
+
+def parse_u16_or_keep(text: str, fallback: int) -> int:
+    try:
+        v = int(text)
+    except Exception:
+        return int(fallback)
+    if v < 0:
+        return 0
+    if v > 65535:
+        return 65535
+    return v
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -525,10 +537,26 @@ class App(tk.Tk):
         pwmf.pack(fill=tk.X)
         rowm = ttk.Frame(pwmf); rowm.pack(fill=tk.X)
         self.pwm_mode_var = tk.StringVar(value="manual")
+        self._last_pwm_mode = "manual"
         ttk.Radiobutton(rowm, text="Manual entry", variable=self.pwm_mode_var,
                         value="manual", command=self._on_pwm_mode_change).pack(side=tk.LEFT)
         ttk.Radiobutton(rowm, text="UDP 8888", variable=self.pwm_mode_var,
                         value="udp", command=self._on_pwm_mode_change).pack(side=tk.LEFT, padx=(12,0))
+        rowa = ttk.Frame(pwmf); rowa.pack(fill=tk.X, pady=(4,0))
+        ttk.Label(rowa, text="All").pack(side=tk.LEFT)
+        self.pwm_all_var = tk.StringVar(value="0")
+        self.entry_pwm_all = ttk.Entry(rowa, width=8, textvariable=self.pwm_all_var)
+        self.entry_pwm_all.pack(side=tk.LEFT, padx=(0,8))
+        self.entry_pwm_all.bind("<Return>", self._on_all_entry_commit)
+        self.entry_pwm_all.bind("<FocusOut>", self._on_all_entry_commit)
+        self.btn_apply_all = ttk.Button(rowa, text="Apply to all", command=self._on_apply_all)
+        self.btn_apply_all.pack(side=tk.LEFT)
+        self.var_link_all = tk.IntVar(value=0)
+        self.chk_link_all = ttk.Checkbutton(rowa, text="Link all",
+                                            variable=self.var_link_all,
+                                            command=self._on_link_all_toggle)
+        self.chk_link_all.pack(side=tk.LEFT, padx=(8,0))
+
         rowp = ttk.Frame(pwmf); rowp.pack(fill=tk.X, pady=(4,0))
         self.pwm_vars = [tk.StringVar(value="0") for _ in range(4)]
         self.pwm_entries: list[ttk.Entry] = []
@@ -536,7 +564,10 @@ class App(tk.Tk):
             ttk.Label(rowp, text=f"m{i+1}").grid(row=0, column=2*i, padx=(0,4))
             e = ttk.Entry(rowp, width=8, textvariable=var)
             e.grid(row=0, column=2*i+1, padx=(0,8))
+            e.bind("<Return>", self._on_any_m_entry_commit)
+            e.bind("<FocusOut>", self._on_any_m_entry_commit)
             self.pwm_entries.append(e)
+        self._updating_pwm_entries = False
         self._on_pwm_mode_change()
         rowb = ttk.Frame(pwmf); rowb.pack(fill=tk.X, pady=(8,0))
         self.btn_pwm_start = ttk.Button(rowb, text="Take off", command=self._pwm_start)
@@ -1242,6 +1273,8 @@ class App(tk.Tk):
         mode = self.pwm_mode_var.get()
         pwm_vals = []
         if mode == "manual":
+            if models.get_link_all():
+                self._on_all_entry_commit()
             for var in self.pwm_vars:
                 try:
                     pwm_vals.append(int(var.get()))
@@ -1274,6 +1307,67 @@ class App(tk.Tk):
                 e.configure(state=state)
             except Exception:
                 pass
+        try:
+            if mode == "manual":
+                self.entry_pwm_all.configure(state="normal")
+                self.btn_apply_all.configure(state=tk.NORMAL)
+                self.chk_link_all.configure(state=tk.NORMAL)
+                if self._last_pwm_mode == "udp" and models.get_link_all():
+                    self._on_all_entry_commit()
+            else:
+                self.entry_pwm_all.configure(state="readonly")
+                self.btn_apply_all.configure(state=tk.DISABLED)
+                self.chk_link_all.configure(state=tk.DISABLED)
+        except Exception:
+            pass
+        self._last_pwm_mode = mode
+
+    def _on_apply_all(self):
+        v = parse_u16_or_keep(self.entry_pwm_all.get(), models.get_master_pwm())
+        models.set_master_pwm(v)
+        models.set_desired_pwm_tuple(v, v, v, v)
+        self.pwm_all_var.set(str(v))
+        self._set_pwm_entries(v, v, v, v)
+
+    def _on_link_all_toggle(self):
+        enabled = bool(self.var_link_all.get())
+        models.set_link_all(enabled)
+        if enabled:
+            v = parse_u16_or_keep(self.entry_pwm_all.get(), models.get_master_pwm())
+            models.set_master_pwm(v)
+            models.set_desired_pwm_tuple(v, v, v, v)
+            self.pwm_all_var.set(str(v))
+            self._set_pwm_entries(v, v, v, v)
+
+    def _on_all_entry_commit(self, ev=None):
+        if not models.get_link_all():
+            return
+        v = parse_u16_or_keep(self.entry_pwm_all.get(), models.get_master_pwm())
+        models.set_master_pwm(v)
+        models.set_desired_pwm_tuple(v, v, v, v)
+        self.pwm_all_var.set(str(v))
+        self._set_pwm_entries(v, v, v, v)
+
+    def _on_any_m_entry_commit(self, ev=None):
+        if not models.get_link_all():
+            return
+        if not ev or not getattr(ev, "widget", None):
+            return
+        v = parse_u16_or_keep(ev.widget.get(), models.get_master_pwm())
+        models.set_master_pwm(v)
+        models.set_desired_pwm_tuple(v, v, v, v)
+        self.pwm_all_var.set(str(v))
+        self._set_pwm_entries(v, v, v, v)
+
+    def _set_pwm_entries(self, m1, m2, m3, m4):
+        if self._updating_pwm_entries:
+            return
+        self._updating_pwm_entries = True
+        try:
+            for var, val in zip(self.pwm_vars, (m1, m2, m3, m4)):
+                var.set(str(int(val)))
+        finally:
+            self._updating_pwm_entries = False
 
     def _on_offset_change(self, *_):
         try:
@@ -1458,8 +1552,7 @@ class App(tk.Tk):
         try:
             if models.get_pwm_running() and self.pwm_mode_var.get() == "udp":
                 vals = models.get_last_pwm()
-                for i, var in enumerate(self.pwm_vars):
-                    var.set(str(int(vals[i])))
+                self._set_pwm_entries(*vals)
         except Exception:
             pass
 
