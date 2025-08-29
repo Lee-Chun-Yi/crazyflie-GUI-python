@@ -853,6 +853,10 @@ def start_4pwm_loop(state: SharedState, link_mgr: LinkManager, rate_hz: float,
         link_mgr.send_arming_request(True)
     except Exception:
         pass
+    # Clear any lingering stop flags from previous runs before starting
+    # a new PWM loop. This allows the loop to restart after an emergency
+    # stop or other abort that left the flags set.
+    models.clear_stop_flags(state)
     _pwm_enable_param_name = try_set_enable_param(cf, 1)
 
     _pwm_stop_evt.clear()
