@@ -1309,12 +1309,26 @@ class App(tk.Tk):
         )
 
     def _pwm_stop(self):
-        controller.land_4pwm(self.state_model, self.link)
-        controller.clear_udp_8888()
-        self.btn_pwm_start.configure(state=tk.NORMAL)
         self.btn_pwm_stop.configure(state=tk.DISABLED)
-        self.log("Landing complete (PWM), port 8888 cleared.")
-        self._on_pwm_mode_change()
+        self.btn_pwm_start.configure(state=tk.NORMAL)
+        self.log("Landing via setpoint...")
+
+        def _done():
+            controller.clear_udp_8888()
+            self.log("Landing complete (PWM), port 8888 cleared.")
+            self._on_pwm_mode_change()
+
+        def _err(msg: str):
+            controller.clear_udp_8888()
+            self.log(f"Landing aborted: {msg}")
+            self._on_pwm_mode_change()
+
+        controller.land_4pwm(
+            self.state_model,
+            self.link,
+            on_done=lambda: self.after(0, _done),
+            on_error=lambda m: self.after(0, _err(m)),
+        )
     def _on_pwm_mode_change(self, *_):
         """Switch m1~m4 Entry state based on selected PWM mode."""
         mode = (self.pwm_mode_var.get() or "manual").lower()
