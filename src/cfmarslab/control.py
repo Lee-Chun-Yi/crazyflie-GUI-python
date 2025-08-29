@@ -6,6 +6,8 @@ from typing import Optional, List
 from queue import Queue
 from collections import deque
 
+from cflib.crtp.crtpstack import CRTPPacket
+
 from .models import SharedState, set_last_stream_xyz, get_last_stream_xyz as _get_last_stream_xyz
 from . import models
 from .utils import set_realtime_priority
@@ -27,6 +29,56 @@ _pwm_udp: Optional['PWMUDPReceiver'] = None
 _path_loop: Optional['FlightPathLoop'] = None
 # Track UDPInput instances using port 8888
 _udp_inputs: List['UDPInput'] = []
+
+# --- 4-PWM CRTP configuration -------------------------------------------
+PORT_PWM = 0x0A
+CHAN_PWM = 0
+ENABLE_PARAM_CANDIDATES = ["crtp_pwm.enable", "pwm.enable", "motorPowerSet.enable"]
+
+# Runtime state for the new 4-PWM loop
+_pwm_thread: Optional[Thread] = None
+_pwm_stop_evt = Event()
+_pwm_manual_vals = [0, 0, 0, 0]
+_pwm_enable_param_name = ""
+
+
+def clamp_u16(v: int) -> int:
+    return 0 if v < 0 else (65535 if v > 65535 else int(v))
+
+
+def send_packet_compat(cf, pkt) -> None:
+    """Best-effort send_packet with multiple fallbacks."""
+    for attr in ("link", "cf.link", "_link"):
+        obj = cf
+        try:
+            for part in attr.split('.'):
+                obj = getattr(obj, part)
+            obj.send_packet(pkt)
+            return
+        except Exception:
+            continue
+    raise RuntimeError("No send_packet available on CF object")
+
+
+def send_4pwm_packet(cf, m1, m2, m3, m4) -> None:
+    pkt = CRTPPacket()
+    pkt.port = PORT_PWM
+    pkt.channel = CHAN_PWM
+    pkt.data = struct.pack("<HHHH", m1, m2, m3, m4)
+    send_packet_compat(cf, pkt)
+
+
+def try_set_enable_param(cf, state: int) -> str:
+    target = "1" if state else "0"
+    for name in ENABLE_PARAM_CANDIDATES:
+        try:
+            cf.param.set_value(name, target)
+            time.sleep(0.05)
+            return name
+        except Exception:
+            continue
+    logging.warning("No PWM enable param could be set")
+    return ""
 
 
 def preview_points_none(x: float, y: float, z: float):
@@ -759,6 +811,183 @@ def smooth_landing(target, mode: str = "rpyt", *, start_thrust: int | None = Non
                 except Exception:
                     pass
             time.sleep(dt2)
+
+
+def start_4pwm_loop(state: SharedState, link_mgr: LinkManager, rate_hz: float,
+                    pwm_mode: str = "manual", manual_pwm: List[int] | None = None,
+                    udp_port: int = 8888) -> bool:
+    """Start background loop sending 4×PWM via CRTP port 0x0A."""
+    global _pwm_thread, _pwm_stop_evt, _pwm_udp, _pwm_manual_vals, _pwm_enable_param_name
+    if _pwm_thread and _pwm_thread.is_alive():
+        return True
+    if not link_mgr or not link_mgr.ensure_connected():
+        logging.error("No link; cannot start PWM loop")
+        return False
+    cf = link_mgr.get_cf()
+    if cf is None:
+        logging.error("No Crazyflie handle")
+        return False
+    try:
+        link_mgr.send_arming_request(True)
+    except Exception:
+        pass
+    _pwm_enable_param_name = try_set_enable_param(cf, 1)
+
+    _pwm_stop_evt.clear()
+    rate = float(rate_hz) if rate_hz else float(Rates.SETPOINT_HZ)
+    interval = 1.0 / rate if rate > 0 else 0.01
+
+    if pwm_mode == "udp":
+        if _pwm_udp is None:
+            _pwm_udp = PWMUDPReceiver(port=udp_port)
+        _pwm_udp.start()
+        models.set_accept_udp_8888(True)
+        try:
+            with state.lock:
+                state.using_udp_8888 = True
+        except Exception:
+            pass
+    else:
+        _pwm_manual_vals = [clamp_u16(v) for v in (manual_pwm or [0, 0, 0, 0])[:4]]
+
+    def _worker():
+        last_t = time.perf_counter()
+        next_t = time.monotonic()
+        models.set_pwm_running(True)
+        while (not _pwm_stop_evt.is_set() and
+               not state.stop_all.is_set() and
+               not state.stop_flight.is_set()):
+            if pwm_mode == "udp" and _pwm_udp:
+                vals = _pwm_udp.get_last()
+            else:
+                vals = list(_pwm_manual_vals)
+            m1, m2, m3, m4 = [clamp_u16(v) for v in vals[:4]]
+            try:
+                send_4pwm_packet(cf, m1, m2, m3, m4)
+            except Exception:
+                logger.exception("send_4pwm_packet failed")
+                break
+            models.set_last_pwm((m1, m2, m3, m4))
+            now = time.perf_counter()
+            dt = now - last_t
+            if dt > 0:
+                models.set_pwm_actual_rate(1.0 / dt)
+            last_t = now
+            next_t += interval
+            sleep = next_t - time.monotonic()
+            if sleep > 0:
+                time.sleep(sleep)
+        models.set_pwm_running(False)
+
+    _pwm_thread = Thread(target=_worker, daemon=True)
+    _pwm_thread.start()
+    with state.lock:
+        state.active_mode = "pwm"
+        state.is_flying.set()
+    return True
+
+
+def stop_4pwm_loop(state: SharedState) -> None:
+    global _pwm_thread, _pwm_stop_evt, _pwm_udp
+    _pwm_stop_evt.set()
+    if _pwm_thread:
+        _pwm_thread.join(timeout=1.0)
+        _pwm_thread = None
+    if _pwm_udp:
+        _pwm_udp.stop()
+        _pwm_udp = None
+    models.set_pwm_running(False)
+    models.set_accept_udp_8888(False)
+    try:
+        with state.lock:
+            state.using_udp_8888 = False
+    except Exception:
+        pass
+
+
+def land_4pwm(state: SharedState, link_mgr: LinkManager) -> None:
+    """Ramp down motors symmetrically then stop the PWM loop."""
+    cf = link_mgr.get_cf() if link_mgr else None
+    last = models.get_last_pwm()
+    stop_4pwm_loop(state)
+    if cf is None:
+        return
+    start_vals = [clamp_u16(v) for v in last]
+    start = max(start_vals)
+    steps = Landing.STEPS
+    total_time = Landing.RAMP1_TIME + Landing.RAMP2_TIME
+    dt = total_time / steps if steps else 0
+    for i in range(steps):
+        frac = 1.0 - (i + 1) / steps
+        vals = [int(v * frac) for v in start_vals]
+        try:
+            send_4pwm_packet(cf, *vals)
+        except Exception:
+            pass
+        time.sleep(dt)
+    try:
+        send_4pwm_packet(cf, 0, 0, 0, 0)
+    except Exception:
+        pass
+    models.set_last_pwm((0, 0, 0, 0))
+    global _pwm_enable_param_name
+    if _pwm_enable_param_name:
+        try:
+            cf.param.set_value(_pwm_enable_param_name, "0")
+            time.sleep(0.05)
+        except Exception:
+            pass
+        _pwm_enable_param_name = ""
+    with state.lock:
+        state.active_mode = None
+        state.is_flying.clear()
+
+
+def emergency_stop_4pwm(state: SharedState, link_mgr: LinkManager) -> None:
+    cf = link_mgr.get_cf() if link_mgr else None
+    stop_4pwm_loop(state)
+    if cf:
+        try:
+            send_4pwm_packet(cf, 0, 0, 0, 0)
+        except Exception:
+            pass
+    models.set_last_pwm((0, 0, 0, 0))
+    with state.lock:
+        state.active_mode = None
+        state.is_flying.clear()
+
+
+def clear_udp_8888_with_zero(link_mgr: LinkManager | None, state: SharedState) -> None:
+    """Send zero PWM and neutral RPYT once, then free UDP 8888."""
+    models.set_accept_udp_8888(False)
+    cf = link_mgr.get_cf() if link_mgr else None
+    try:
+        if cf:
+            send_4pwm_packet(cf, 0, 0, 0, 0)
+    except Exception:
+        pass
+    try:
+        cmdr = link_mgr.get_commander() if link_mgr else None
+        if cmdr:
+            cmdr.send_setpoint(0.0, 0.0, 0.0, 0)
+    except Exception:
+        pass
+    stop_4pwm_loop(state)
+    stop_udp8888_receivers_if_any()
+    close_udp8888_sockets_if_any()
+    models.set_last_rpyt((0.0, 0.0, 0.0, 0.0))
+    models.set_last_pwm((0, 0, 0, 0))
+    try:
+        with state.lock:
+            state.rpyth.update({"roll": 0.0, "pitch": 0.0, "yaw": 0.0, "thrust": 0.0})
+            state.using_udp_8888 = False
+    except Exception:
+        pass
+    try:
+        from .utils import clear_udp_ports_windows
+        clear_udp_ports_windows([8888])
+    except Exception:
+        pass
 
 
 def start_mode(mode: str, state: SharedState, link: LinkManager, *, rate_hz: int | None = None,

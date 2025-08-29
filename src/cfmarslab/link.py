@@ -74,6 +74,18 @@ class LinkManager:
         cf = self.cf
         return cf.commander if cf else None
 
+    def get_link(self) -> Optional[object]:
+        """Return the low-level link object if available."""
+        cf = self.cf
+        if cf and getattr(cf, "link", None):
+            return cf.link
+        try:
+            if self.scf and getattr(self.scf.cf, "link", None):
+                return self.scf.cf.link
+        except Exception:
+            pass
+        return None
+
     def send_arming_request(self, value: bool) -> bool:
         cf = self.cf
         try:

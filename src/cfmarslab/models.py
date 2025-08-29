@@ -58,6 +58,9 @@ _stream_lock = Lock()
 _lock = threading.Lock()
 _accept_udp_8888 = False
 _last_rpyt = (0.0, 0.0, 0.0, 0.0)
+_last_pwm = (0, 0, 0, 0)
+_pwm_running = False
+_pwm_actual_rate = 0.0
 
 
 def set_accept_udp_8888(v: bool):
@@ -80,6 +83,39 @@ def set_last_rpyt(rpyt_tuple):
 def get_last_rpyt():
     with _lock:
         return _last_rpyt
+
+
+def set_last_pwm(pwm_tuple):
+    global _last_pwm
+    with _lock:
+        _last_pwm = tuple(int(x) for x in pwm_tuple)
+
+
+def get_last_pwm():
+    with _lock:
+        return _last_pwm
+
+
+def set_pwm_running(v: bool):
+    global _pwm_running
+    with _lock:
+        _pwm_running = bool(v)
+
+
+def get_pwm_running() -> bool:
+    with _lock:
+        return _pwm_running
+
+
+def set_pwm_actual_rate(v: float):
+    global _pwm_actual_rate
+    with _lock:
+        _pwm_actual_rate = float(v)
+
+
+def get_pwm_actual_rate() -> float:
+    with _lock:
+        return _pwm_actual_rate
 
 
 def clear_stop_flags(state: SharedState) -> None:
