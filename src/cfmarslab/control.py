@@ -157,7 +157,33 @@ def start_4pwm_loop_async(
                 models.set_desired_pwm_tuple(*vals)
 
             def _worker():
-                last_t = time.perf_counter()
+                pkt_count = 0
+                pkt_lock = Lock()
+                stop_evt = Event()
+
+                def _rate_monitor():
+                    nonlocal pkt_count
+                    t0 = time.perf_counter()
+                    max_rate = rate * 1.5
+                    while not stop_evt.is_set():
+                        time.sleep(0.5)
+                        now = time.perf_counter()
+                        with pkt_lock:
+                            c = pkt_count
+                            pkt_count = 0
+                        elapsed = now - t0
+                        if elapsed > 0 and c > 0:
+                            r = c / elapsed
+                            if r < 0.0:
+                                r = 0.0
+                            if r > max_rate:
+                                r = max_rate
+                            models.set_pwm_actual_rate(r)
+                        t0 = now
+
+                monitor = Thread(target=_rate_monitor, daemon=True)
+                monitor.start()
+
                 next_t = time.monotonic()
                 models.set_pwm_running(True)
                 while (
@@ -176,16 +202,15 @@ def start_4pwm_loop_async(
                         logger.exception("send_4pwm_packet failed")
                         break
                     models.set_last_pwm((m1, m2, m3, m4))
-                    now = time.perf_counter()
-                    dt = now - last_t
-                    if dt > 0:
-                        models.set_pwm_actual_rate(1.0 / dt)
-                    last_t = now
+                    with pkt_lock:
+                        pkt_count += 1
                     next_t += interval
                     sleep = next_t - time.monotonic()
                     if sleep > 0:
                         time.sleep(sleep)
                 models.set_pwm_running(False)
+                stop_evt.set()
+                monitor.join(timeout=1.0)
 
             _pwm_thread = Thread(target=_worker, daemon=True)
             _pwm_thread.start()
@@ -976,7 +1001,33 @@ def start_4pwm_loop(state: SharedState, link_mgr: LinkManager, rate_hz: float,
         models.set_desired_pwm_tuple(*vals)
 
     def _worker():
-        last_t = time.perf_counter()
+        pkt_count = 0
+        pkt_lock = Lock()
+        stop_evt = Event()
+
+        def _rate_monitor():
+            nonlocal pkt_count
+            t0 = time.perf_counter()
+            max_rate = rate * 1.5
+            while not stop_evt.is_set():
+                time.sleep(0.5)
+                now = time.perf_counter()
+                with pkt_lock:
+                    c = pkt_count
+                    pkt_count = 0
+                elapsed = now - t0
+                if elapsed > 0 and c > 0:
+                    r = c / elapsed
+                    if r < 0.0:
+                        r = 0.0
+                    if r > max_rate:
+                        r = max_rate
+                    models.set_pwm_actual_rate(r)
+                t0 = now
+
+        monitor = Thread(target=_rate_monitor, daemon=True)
+        monitor.start()
+
         next_t = time.monotonic()
         models.set_pwm_running(True)
         while (not _pwm_stop_evt.is_set() and
@@ -993,16 +1044,15 @@ def start_4pwm_loop(state: SharedState, link_mgr: LinkManager, rate_hz: float,
                 logger.exception("send_4pwm_packet failed")
                 break
             models.set_last_pwm((m1, m2, m3, m4))
-            now = time.perf_counter()
-            dt = now - last_t
-            if dt > 0:
-                models.set_pwm_actual_rate(1.0 / dt)
-            last_t = now
+            with pkt_lock:
+                pkt_count += 1
             next_t += interval
             sleep = next_t - time.monotonic()
             if sleep > 0:
                 time.sleep(sleep)
         models.set_pwm_running(False)
+        stop_evt.set()
+        monitor.join(timeout=1.0)
 
     _pwm_thread = Thread(target=_worker, daemon=True)
     _pwm_thread.start()
