@@ -405,8 +405,9 @@ class UDPInput:
 
 
 class PWMUDPReceiver:
-    """Background UDP listener for 4 PWM values (m1–m4) as little-endian <4H> (8 bytes).
-    Atomic update: self._last is replaced ONLY when a full, valid 8-byte packet is parsed.
+    """Background UDP listener for 4 PWM values (m1–m4).
+    Accepts little-endian <4H> (8 bytes) or <4f> (16 bytes) packets.
+    Atomic update: self._last is replaced ONLY when a full, valid packet is parsed.
     """
 
     def __init__(self, port: int = 8888):
@@ -457,24 +458,37 @@ class PWMUDPReceiver:
                 self._packets_bad += 1
                 continue
 
-            # Expect exactly 8 bytes: <4H> little-endian
-            if len(data) != 8:
-                self._packets_bad += 1
-                continue
+            # Accept either 8-byte <4H> or 16-byte <4f>
+            if len(data) == 8:
+                try:
+                    m1, m2, m3, m4 = struct.unpack("<4H", data)
+                    vals = [self._clamp_u16(int(m1)),
+                            self._clamp_u16(int(m2)),
+                            self._clamp_u16(int(m3)),
+                            self._clamp_u16(int(m4))]
+                    self._last = vals
+                    self._packets_ok += 1
+                    continue
+                except struct.error:
+                    self._packets_bad += 1
+                    continue
 
-            try:
-                m1, m2, m3, m4 = struct.unpack("<4H", data)
-                vals = [self._clamp_u16(int(m1)),
-                        self._clamp_u16(int(m2)),
-                        self._clamp_u16(int(m3)),
-                        self._clamp_u16(int(m4))]
-            except struct.error:
-                self._packets_bad += 1
-                continue
+            if len(data) == 16:
+                try:
+                    f1, f2, f3, f4 = struct.unpack("<4f", data)
+                    vals = [f1, f2, f3, f4]
+                    if all(0.0 <= v <= 1.0 for v in vals):
+                        vals = [v * 65535.0 for v in vals]
+                    vals = [self._clamp_u16(int(v)) for v in vals]
+                    self._last = vals
+                    self._packets_ok += 1
+                    continue
+                except struct.error:
+                    self._packets_bad += 1
+                    continue
 
-            # Atomic update on successful parse only
-            self._last = vals
-            self._packets_ok += 1
+            # Any other length or failure is counted as bad
+            self._packets_bad += 1
 
 
 class _SendQueue:
