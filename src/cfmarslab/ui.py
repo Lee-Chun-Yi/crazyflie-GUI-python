@@ -1280,16 +1280,33 @@ class App(tk.Tk):
                     pwm_vals.append(int(var.get()))
                 except Exception:
                     pwm_vals.append(0)
-        ok = controller.start_4pwm_loop(self.state_model, self.link,
-                                        int(self.pwm_hz_var.get()),
-                                        pwm_mode=mode, manual_pwm=pwm_vals)
-        if ok:
-            self.btn_pwm_start.configure(state=tk.DISABLED)
-            self.btn_pwm_stop.configure(state=tk.NORMAL)
-            self.log("4PID loop started")
-            self._on_pwm_mode_change()
-        else:
-            self.log("4PID loop failed to start")
+        self.btn_pwm_start.configure(state=tk.DISABLED)
+        self.btn_pwm_stop.configure(state=tk.DISABLED)
+        self.log("Starting 4-PWM...")
+
+        def _ok():
+            self.after(0, lambda: (
+                self.btn_pwm_stop.configure(state=tk.NORMAL),
+                self.log("4PID loop started"),
+                self._on_pwm_mode_change()
+            ))
+
+        def _err(msg: str):
+            self.after(0, lambda: (
+                self.btn_pwm_start.configure(state=tk.NORMAL),
+                self.btn_pwm_stop.configure(state=tk.DISABLED),
+                self.log(f"4PID loop failed to start: {msg}")
+            ))
+
+        controller.start_4pwm_loop_async(
+            self.state_model,
+            self.link,
+            int(self.pwm_hz_var.get()),
+            pwm_mode=mode,
+            manual_pwm=pwm_vals,
+            on_success=_ok,
+            on_error=_err,
+        )
 
     def _pwm_stop(self):
         controller.land_4pwm(self.state_model, self.link)
