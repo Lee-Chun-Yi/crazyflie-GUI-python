@@ -17,6 +17,30 @@ from .link import LinkManager
 
 logger = logging.getLogger(__name__)
 
+# --- Landing configuration -------------------------------------------------
+THRUST_SAFE = 30000
+THRUST_MAX = 65535
+LAND_SEC = 1.5
+SETPOINT_HZ = 100.0
+DISARM_AFTER_LAND = False
+
+# Landing thread state
+_landing_thread: Optional[Thread] = None
+_landing_stop_evt = Event()
+_landing_flag = Event()
+_landing_lock = Lock()
+
+
+def set_landing(v: bool) -> None:
+    if v:
+        _landing_flag.set()
+    else:
+        _landing_flag.clear()
+
+
+def get_landing() -> bool:
+    return _landing_flag.is_set()
+
 
 def get_last_stream_xyz():
     """Expose last streamed XYZ for read-only access."""
@@ -102,6 +126,99 @@ def try_set_enable_param(cf, state: int) -> str:
     return ""
 
 
+def abort_landing(link_mgr: LinkManager | None = None, *, disarm: bool = False) -> None:
+    """Abort any in-progress setpoint landing."""
+    global _landing_thread
+    _landing_stop_evt.set()
+    thread = None
+    with _landing_lock:
+        thread = _landing_thread
+        _landing_thread = None
+    if thread and thread.is_alive():
+        thread.join(timeout=1.0)
+    if link_mgr:
+        try:
+            for _ in range(5):
+                link_mgr.send_setpoint(0.0, 0.0, 0.0, 0)
+                time.sleep(0.01)
+        except Exception:
+            pass
+        if disarm:
+            try:
+                link_mgr.send_arming_request(False)
+            except Exception:
+                pass
+    _landing_stop_evt.clear()
+    set_landing(False)
+
+
+def land_via_setpoint(
+    link_mgr: LinkManager,
+    thrust_start: int | None = None,
+    land_sec: float = LAND_SEC,
+    hz: float = SETPOINT_HZ,
+    disarm_after: bool = DISARM_AFTER_LAND,
+    on_done: Optional[Callable[[], None]] = None,
+    on_error: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Run a non-blocking landing using RPYT setpoints."""
+    if get_landing():
+        abort_landing(link_mgr, disarm=disarm_after)
+        if on_done:
+            on_done()
+        return
+    if not link_mgr or not link_mgr.ensure_connected():
+        if on_error:
+            on_error("No link")
+        return
+
+    def _worker():
+        try:
+            set_landing(True)
+            start = thrust_start
+            if start is None or start <= 0:
+                try:
+                    start = int(models.get_last_rpyt()[3])
+                except Exception:
+                    start = None
+            if start is None or start <= 0:
+                start = THRUST_SAFE
+            start = max(0, min(THRUST_MAX, int(start)))
+            dt = 1.0 / hz if hz > 0 else 0.01
+            t0 = time.monotonic()
+            next_t = t0
+            end_t = t0 + max(0.0, float(land_sec))
+            while not _landing_stop_evt.is_set() and next_t < end_t:
+                alpha = (next_t - t0) / land_sec if land_sec > 0 else 1.0
+                thr = int(round(start * (1.0 - alpha)))
+                thr = max(0, min(THRUST_MAX, thr))
+                link_mgr.send_setpoint(0.0, 0.0, 0.0, thr)
+                next_t += dt
+                sleep = next_t - time.monotonic()
+                if sleep > 0:
+                    time.sleep(sleep)
+            for _ in range(5):
+                link_mgr.send_setpoint(0.0, 0.0, 0.0, 0)
+                time.sleep(dt)
+            if disarm_after:
+                link_mgr.send_arming_request(False)
+            models.set_last_rpyt((0.0, 0.0, 0.0, 0.0))
+            if on_done:
+                on_done()
+        except Exception as e:
+            logger.exception("Setpoint landing failed")
+            if on_error:
+                on_error(str(e))
+        finally:
+            set_landing(False)
+            _landing_stop_evt.clear()
+
+    global _landing_thread
+    _landing_stop_evt.clear()
+    _landing_thread = Thread(target=_worker, daemon=True)
+    _landing_thread.start()
+
+
 def start_4pwm_loop_async(
     state: SharedState,
     link_mgr: LinkManager,
@@ -117,6 +234,7 @@ def start_4pwm_loop_async(
     def _starter() -> None:
         global _pwm_thread, _pwm_stop_evt, _pwm_udp, _pwm_enable_param_name
         try:
+            abort_landing(link_mgr)
             if _pwm_thread and _pwm_thread.is_alive():
                 if on_success:
                     on_success()
@@ -977,6 +1095,7 @@ def start_4pwm_loop(state: SharedState, link_mgr: LinkManager, rate_hz: float,
                     udp_port: int = 8888) -> bool:
     """Start background loop sending 4×PWM via CRTP port 0x0A."""
     global _pwm_thread, _pwm_stop_evt, _pwm_udp, _pwm_enable_param_name
+    abort_landing(link_mgr)
     if _pwm_thread and _pwm_thread.is_alive():
         return True
     if not link_mgr or not link_mgr.ensure_connected():
@@ -1094,42 +1213,44 @@ def stop_4pwm_loop(state: SharedState) -> None:
         pass
 
 
-def land_4pwm(state: SharedState, link_mgr: LinkManager) -> None:
-    """Ramp down motors symmetrically then stop the PWM loop."""
-    cf = link_mgr.get_cf() if link_mgr else None
-    last = models.get_last_pwm()
+def land_4pwm(
+    state: SharedState,
+    link_mgr: LinkManager,
+    *,
+    thrust_start: int | None = None,
+    on_done: Optional[Callable[[], None]] = None,
+    on_error: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Stop PWM worker and land via RPYT setpoints."""
     stop_4pwm_loop(state)
-    if cf is None:
-        return
-    start_vals = [clamp_u16(v) for v in last]
-    start = max(start_vals)
-    steps = Landing.STEPS
-    total_time = Landing.RAMP1_TIME + Landing.RAMP2_TIME
-    dt = total_time / steps if steps else 0
-    for i in range(steps):
-        frac = 1.0 - (i + 1) / steps
-        vals = [int(v * frac) for v in start_vals]
-        try:
-            send_4pwm_packet(cf, *vals)
-        except Exception:
-            pass
-        time.sleep(dt)
-    try:
-        send_4pwm_packet(cf, 0, 0, 0, 0)
-    except Exception:
-        pass
-    models.set_last_pwm((0, 0, 0, 0))
+    cf = link_mgr.get_cf() if link_mgr else None
     global _pwm_enable_param_name
-    if _pwm_enable_param_name:
+    if cf and _pwm_enable_param_name:
         try:
             cf.param.set_value(_pwm_enable_param_name, "0")
             time.sleep(0.05)
         except Exception:
             pass
         _pwm_enable_param_name = ""
-    with state.lock:
-        state.active_mode = None
-        state.is_flying.clear()
+    models.set_last_pwm((0, 0, 0, 0))
+    models.set_accept_udp_8888(False)
+    try:
+        with state.lock:
+            state.active_mode = None
+            state.is_flying.clear()
+            state.using_udp_8888 = False
+    except Exception:
+        pass
+    logger.info("Landing via setpoint...")
+    land_via_setpoint(
+        link_mgr,
+        thrust_start=thrust_start,
+        land_sec=LAND_SEC,
+        hz=SETPOINT_HZ,
+        disarm_after=DISARM_AFTER_LAND,
+        on_done=on_done,
+        on_error=on_error,
+    )
 
 
 def emergency_stop_4pwm(state: SharedState, link_mgr: LinkManager) -> None:
@@ -1184,6 +1305,7 @@ def start_mode(mode: str, state: SharedState, link: LinkManager, *, rate_hz: int
                udp_port: int = 8888):
     """Ensure connection, send neutral, arm, and start the requested loop."""
     global _setpoint_loop, _pwm_loop, _pwm_udp
+    abort_landing(link)
     if not link or not link.ensure_connected():
         logging.error("No link; cannot start mode")
         return None
@@ -1258,17 +1380,10 @@ def land(mode: str, state: SharedState, link: LinkManager):
         # ramp down thrust with zeros for roll/pitch/yaw
         smooth_landing(commander, "rpyt", start_thrust=start_thr)
     else:
-        last = [0, 0, 0, 0]
-        if _pwm_loop and _pwm_loop.is_running():
-            last = list(getattr(_pwm_loop, "last_pwm", [0, 0, 0, 0]))
-            _pwm_loop.stop()
-        if _pwm_udp:
-            _pwm_udp.stop(); _pwm_udp = None
-        avg = int(sum(last)/4) if last else 0
-        smooth_landing(cf, "pwm", start_thrust=avg)
-        _pwm_loop = None
+        land_4pwm(state, link)
+        return True
 
-    # final safety zero
+    # final safety zero for RPYT
     zero_output(mode, link)
     try:
         link.send_arming_request(False)
@@ -1279,10 +1394,7 @@ def land(mode: str, state: SharedState, link: LinkManager):
         state.is_flying.clear()
     clear_udp_8888()
     send_udp_rpyt_zero()
-    if mode == "rpyt":
-        logging.info("Landing complete, zero RPYT packet dispatched, port 8888 cleared.")
-    else:
-        logging.info("Landing complete (PWM), zero RPYT packet dispatched, port 8888 cleared.")
+    logging.info("Landing complete, zero RPYT packet dispatched, port 8888 cleared.")
     return True
 
 
