@@ -2,7 +2,7 @@ from __future__ import annotations
 import socket, struct, logging, time, math
 from time import perf_counter_ns
 from threading import Thread, Event, Lock
-from typing import Optional, List
+from typing import Optional, List, Callable
 from queue import Queue
 from collections import deque
 
@@ -100,6 +100,105 @@ def try_set_enable_param(cf, state: int) -> str:
             continue
     logging.warning("No PWM enable param could be set")
     return ""
+
+
+def start_4pwm_loop_async(
+    state: SharedState,
+    link_mgr: LinkManager,
+    rate_hz: float,
+    pwm_mode: str = "manual",
+    manual_pwm: List[int] | None = None,
+    udp_port: int = 8888,
+    on_success: Optional[Callable[[], None]] = None,
+    on_error: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Kick off the 4×PWM start sequence in a background thread and return immediately."""
+
+    def _starter() -> None:
+        global _pwm_thread, _pwm_stop_evt, _pwm_udp, _pwm_enable_param_name
+        try:
+            if _pwm_thread and _pwm_thread.is_alive():
+                if on_success:
+                    on_success()
+                return
+            if not link_mgr:
+                raise RuntimeError("No link manager")
+            # quick connection attempts
+            for _ in range(3):
+                if link_mgr.ensure_connected():
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("No link")
+            cf = link_mgr.get_cf()
+            if cf is None:
+                raise RuntimeError("No Crazyflie handle")
+            for _ in range(3):
+                if link_mgr.send_arming_request(True):
+                    break
+                time.sleep(0.05)
+            models.clear_stop_flags(state)
+            _pwm_enable_param_name = try_set_enable_param(cf, 1)
+            _pwm_stop_evt.clear()
+            rate = float(rate_hz) if rate_hz else float(Rates.SETPOINT_HZ)
+            interval = 1.0 / rate if rate > 0 else 0.01
+            if pwm_mode == "udp":
+                if _pwm_udp is None:
+                    _pwm_udp = PWMUDPReceiver(port=udp_port)
+                _pwm_udp.start()
+                models.set_accept_udp_8888(True)
+                try:
+                    with state.lock:
+                        state.using_udp_8888 = True
+                except Exception:
+                    pass
+            else:
+                vals = [clamp_u16(v) for v in (manual_pwm or [0, 0, 0, 0])[:4]]
+                models.set_desired_pwm_tuple(*vals)
+
+            def _worker():
+                last_t = time.perf_counter()
+                next_t = time.monotonic()
+                models.set_pwm_running(True)
+                while (
+                    not _pwm_stop_evt.is_set()
+                    and not state.stop_all.is_set()
+                    and not state.stop_flight.is_set()
+                ):
+                    if pwm_mode == "udp" and _pwm_udp:
+                        vals = _pwm_udp.get_last()
+                    else:
+                        vals = models.get_desired_pwm_tuple()
+                    m1, m2, m3, m4 = [clamp_u16(v) for v in vals[:4]]
+                    try:
+                        send_4pwm_packet(cf, m1, m2, m3, m4)
+                    except Exception:
+                        logger.exception("send_4pwm_packet failed")
+                        break
+                    models.set_last_pwm((m1, m2, m3, m4))
+                    now = time.perf_counter()
+                    dt = now - last_t
+                    if dt > 0:
+                        models.set_pwm_actual_rate(1.0 / dt)
+                    last_t = now
+                    next_t += interval
+                    sleep = next_t - time.monotonic()
+                    if sleep > 0:
+                        time.sleep(sleep)
+                models.set_pwm_running(False)
+
+            _pwm_thread = Thread(target=_worker, daemon=True)
+            _pwm_thread.start()
+            with state.lock:
+                state.active_mode = "pwm"
+                state.is_flying.set()
+            if on_success:
+                on_success()
+        except Exception as e:
+            if on_error:
+                on_error(str(e))
+
+    Thread(target=_starter, daemon=True).start()
 
 
 def preview_points_none(x: float, y: float, z: float):
