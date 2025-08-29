@@ -32,6 +32,26 @@ This is project is also suit to anyone who is bridging  **MATLAB**  and **Crazyf
 - **3D View & Controls**
   - A Matplotlib 3D scene with tight margins occupies the right pane; vertical **Elevation** and horizontal **Azimuth** sliders rotate the view interactively
 
+### MATLAB/Simulink UDP PWM Sender
+
+The GUI's PWM receiver listens on `127.0.0.1:8888` and updates only when a frame of eight bytes is received. Each frame must encode four unsigned 16-bit motor values in little-endian order (`<4H>`).
+
+**MATLAB helper**
+
+```matlab
+bytes = pack_pwm_u16_bytes(m1, m2, m3, m4);
+u = udpport("byte", "OutputDatagramSize", 8);
+write(u, bytes, "uint8", "127.0.0.1", 8888);
+```
+
+**Simulink blocks**
+
+1. Cast each motor signal to `uint16`.
+2. Use a *Byte Pack* block configured for four `uint16` elements with little-endian output (`uint8[8]`).
+3. Connect to a *UDP Send* block set for packet size `8`, remote address `127.0.0.1`, and port `8888`.
+
+The GUI ignores frames that are not exactly eight bytes—for example, sending four `single` values (16 bytes) will be discarded. If the port becomes busy, use **Clear UDP 8888** in the GUI to free it before retrying.
+
 ### Typical workflow
 
 1. Launch the GUI, set radio channel/bitrate/address, and click **Connect**.  
