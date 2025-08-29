@@ -61,6 +61,9 @@ _last_rpyt = (0.0, 0.0, 0.0, 0.0)
 _last_pwm = (0, 0, 0, 0)
 _pwm_running = False
 _pwm_actual_rate = 0.0
+_master_pwm_value = 0
+_link_all_enabled = False
+_last_pwm_tuple = (0, 0, 0, 0)
 
 
 def set_accept_udp_8888(v: bool):
@@ -116,6 +119,43 @@ def set_pwm_actual_rate(v: float):
 def get_pwm_actual_rate() -> float:
     with _lock:
         return _pwm_actual_rate
+
+
+def _clamp_u16(v: int) -> int:
+    return 0 if v < 0 else (65535 if v > 65535 else int(v))
+
+
+def set_master_pwm(v: int) -> None:
+    global _master_pwm_value
+    with _lock:
+        _master_pwm_value = _clamp_u16(v)
+
+
+def get_master_pwm() -> int:
+    with _lock:
+        return _master_pwm_value
+
+
+def set_link_all(enabled: bool) -> None:
+    global _link_all_enabled
+    with _lock:
+        _link_all_enabled = bool(enabled)
+
+
+def get_link_all() -> bool:
+    with _lock:
+        return _link_all_enabled
+
+
+def set_desired_pwm_tuple(m1: int, m2: int, m3: int, m4: int) -> None:
+    global _last_pwm_tuple
+    with _lock:
+        _last_pwm_tuple = tuple(_clamp_u16(v) for v in (m1, m2, m3, m4))
+
+
+def get_desired_pwm_tuple() -> Tuple[int, int, int, int]:
+    with _lock:
+        return _last_pwm_tuple
 
 
 def clear_stop_flags(state: SharedState) -> None:
