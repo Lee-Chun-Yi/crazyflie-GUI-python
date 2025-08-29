@@ -255,7 +255,6 @@ class App(tk.Tk):
         self.udp.start()
 
         self.setpoints = None
-        self.pwm_loop = None
 
     # ---- helpers ----
     def log(self, s: str):
@@ -1139,7 +1138,7 @@ class App(tk.Tk):
     def on_disconnect(self):
         try:
             if self.setpoints: self.setpoints.stop(); self.setpoints=None
-            if self.pwm_loop: self.pwm_loop.stop(); self.pwm_loop=None
+            controller.stop_4pwm_loop(self.state_model)
             if getattr(self, "_vrx_running", False):
                 try: self._vrx_stop()
                 except Exception: pass
@@ -1212,7 +1211,7 @@ class App(tk.Tk):
 
     # ---- Setpoint loop (CF) ----
     def _sp_start(self):
-        if self.pwm_loop and getattr(self.pwm_loop, "is_running", lambda: False)():
+        if models.get_pwm_running():
             self._pwm_stop()
         try:
             self.udp.start()
@@ -1248,11 +1247,10 @@ class App(tk.Tk):
                     pwm_vals.append(int(var.get()))
                 except Exception:
                     pwm_vals.append(0)
-        loop = controller.start_mode("pwm", self.state_model, self.link,
-                                     rate_hz=int(self.pwm_hz_var.get()),
-                                     pwm_mode=mode, manual_pwm=pwm_vals)
-        if loop:
-            self.pwm_loop = loop
+        ok = controller.start_4pwm_loop(self.state_model, self.link,
+                                        int(self.pwm_hz_var.get()),
+                                        pwm_mode=mode, manual_pwm=pwm_vals)
+        if ok:
             self.btn_pwm_start.configure(state=tk.DISABLED)
             self.btn_pwm_stop.configure(state=tk.NORMAL)
             self.log("4PID loop started")
@@ -1261,9 +1259,8 @@ class App(tk.Tk):
             self.log("4PID loop failed to start")
 
     def _pwm_stop(self):
-        controller.land("pwm", self.state_model, self.link)
+        controller.land_4pwm(self.state_model, self.link)
         controller.clear_udp_8888()
-        self.pwm_loop = None
         self.btn_pwm_start.configure(state=tk.NORMAL)
         self.btn_pwm_stop.configure(state=tk.DISABLED)
         self.log("Landing complete (PWM), port 8888 cleared.")
@@ -1294,7 +1291,7 @@ class App(tk.Tk):
             return
         tab = self.ctrl_nb.tab(self.ctrl_nb.select(), "text")
         if tab == "2-PID Controls":
-            if self.pwm_loop and self.pwm_loop.is_running():
+            if models.get_pwm_running():
                 self._pwm_stop()
         elif tab == "4-PID Controls":
             if self.setpoints and self.setpoints.is_running():
@@ -1302,15 +1299,18 @@ class App(tk.Tk):
 
     # ---- Safety ----
     def _on_emergency_stop(self):
-        controller.emergency_stop(self.link, self.state_model)
+        if models.get_pwm_running():
+            controller.emergency_stop_4pwm(self.state_model, self.link)
+            self._console_log("[SAFETY] Emergency stop: PWM loop terminated, motors off.")
+        else:
+            controller.emergency_stop(self.link, self.state_model)
+            self._console_log("[SAFETY] Emergency stop: control loops terminated, RPYT=0 sent.")
         self.setpoints = None
-        self.pwm_loop = None
         self._set_fc_buttons(takeoff_enabled=True, land_enabled=False)
         self._update_rpyt_label(0.0, 0.0, 0.0, 0.0)
-        self._console_log("[SAFETY] Emergency stop: control loops terminated, RPYT=0 sent.")
 
     def _on_clear_udp8888(self):
-        controller.clear_udp_8888_with_neutral(self.link)
+        controller.clear_udp_8888_with_zero(self.link, self.state_model)
         r, p, y, t = models.get_last_rpyt()
         self._update_rpyt_label(r, p, y, t)
         self._console_log("[UDP] Neutral sent and port 8888 cleared; RPYT reset to zero.")
@@ -1423,11 +1423,7 @@ class App(tk.Tk):
         now = perf_counter()
         if now - getattr(self, "_last_kpi_update", 0.0) >= 1.0:
             try:
-                loop = None
-                if self.setpoints and self.setpoints.is_running():
-                    loop = self.setpoints
-                elif self.pwm_loop and self.pwm_loop.is_running():
-                    loop = self.pwm_loop
+                loop = self.setpoints if (self.setpoints and self.setpoints.is_running()) else None
                 if loop:
                     p95, p99, miss_pct = loop.get_cached_stats(now)
                     self.lbl_p95.config(text=f"P95: {p95:.1f} ms")
@@ -1451,20 +1447,17 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-            try:
-                if self.pwm_loop and self.pwm_loop.is_running():
-                    ar = self.pwm_loop.get_actual_rate()
-                    self.lbl_pwm_actual.configure(text=f"Actual: {ar:.1f} Hz")
-                else:
-                    self.lbl_pwm_actual.configure(text="Actual: -- Hz")
-            except Exception:
-                pass
+            ar = models.get_pwm_actual_rate() if models.get_pwm_running() else float('nan')
+            if models.get_pwm_running():
+                self.lbl_pwm_actual.configure(text=f"Actual: {ar:.1f} Hz")
+            else:
+                self.lbl_pwm_actual.configure(text="Actual: -- Hz")
             self._last_kpi_update = now
 
         # update PWM display fields
         try:
-            if self.pwm_loop and self.pwm_mode_var.get() == "udp":
-                vals = getattr(self.pwm_loop, "last_pwm", [0, 0, 0, 0])
+            if models.get_pwm_running() and self.pwm_mode_var.get() == "udp":
+                vals = models.get_last_pwm()
                 for i, var in enumerate(self.pwm_vars):
                     var.set(str(int(vals[i])))
         except Exception:
@@ -1539,7 +1532,7 @@ class App(tk.Tk):
     def on_close(self):
         try:
             if self.setpoints: self.setpoints.stop()
-            if self.pwm_loop: self.pwm_loop.stop()
+            controller.stop_4pwm_loop(self.state_model)
             if self.path_loop:
                 controller.stop_path(self.state_model)
                 self.path_loop = None
