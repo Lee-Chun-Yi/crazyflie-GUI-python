@@ -60,6 +60,7 @@ _accept_udp_8888 = False
 _last_rpyt = (0.0, 0.0, 0.0, 0.0)
 _last_pwm = (0, 0, 0, 0)
 _pwm_running = False
+# Actual PWM send rate as measured by the control loop's monitor thread
 _pwm_actual_rate = 0.0
 _master_pwm_value = 0
 _link_all_enabled = False
