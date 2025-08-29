@@ -68,13 +68,35 @@ def send_4pwm_packet(cf, m1, m2, m3, m4) -> None:
     send_packet_compat(cf, pkt)
 
 
+def _parse_bool(val: object) -> bool:
+    s = str(val).strip().lower()
+    if s in ("1", "true", "t", "yes", "on"):
+        return True
+    if s in ("0", "false", "f", "no", "off"):
+        return False
+    try:
+        return bool(int(s))
+    except Exception:
+        return False
+
+
 def try_set_enable_param(cf, state: int) -> str:
     target = "1" if state else "0"
+    expected = bool(state)
     for name in ENABLE_PARAM_CANDIDATES:
         try:
             cf.param.set_value(name, target)
             time.sleep(0.05)
-            return name
+            for _ in range(3):
+                try:
+                    val = cf.param.get_value(name)
+                    if _parse_bool(val) == expected:
+                        return name
+                except Exception:
+                    pass
+                time.sleep(0.05)
+            logging.warning("PWM enable param %s could not be verified", name)
+            return ""
         except Exception:
             continue
     logging.warning("No PWM enable param could be set")
